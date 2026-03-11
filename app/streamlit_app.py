@@ -35,7 +35,7 @@ st.session_state.setdefault("wizard_step", 1)  # 1,2,3
 st.session_state.setdefault("deck_plan", None)
 st.session_state.setdefault("report", None)
 st.session_state.setdefault("tpl_path", None)
-st.session_state.setdefault("rfp_path", None)
+st.session_state.setdefault("rfp_paths", None)
 st.session_state.setdefault("template_info", None)
 st.session_state.setdefault("retrieved_context", None)
 st.session_state.setdefault("diagrams_generated", False)  # ran generation at least once
@@ -85,7 +85,7 @@ with st.sidebar:
             "deck_plan",
             "report",
             "tpl_path",
-            "rfp_path",
+            "rfp_paths",
             "template_info",
             "retrieved_context",
             "diagrams_generated",
@@ -103,14 +103,30 @@ def save_upload(upload, dest: Path) -> Path:
     dest.write_bytes(upload.getvalue())
     return dest
 
-def parse_rfp(path: Path) -> str:
+def parse_rfp(path: Path) -> tuple[str, dict]:
     if path.suffix.lower() == ".pdf":
         parsed = parse_pdf(path)
         st.success(f"Parsed PDF ({parsed.page_count} pages).")
-        return parsed.text
+        return parsed.text, {"name": path.name, "type": "pdf", "pages": parsed.page_count}
     parsed = parse_docx(path)
     st.success(f"Parsed DOCX ({parsed.paragraph_count} paragraphs).")
-    return parsed.text
+    return parsed.text, {"name": path.name, "type": "docx", "paragraphs": parsed.paragraph_count}
+
+def parse_rfps(paths: list[Path]) -> tuple[str, list[dict], int, int]:
+    texts: list[str] = []
+    summaries: list[dict] = []
+    total_pages = 0
+    total_paragraphs = 0
+    for path in paths:
+        st.info(f"Parsing {path.name}...")
+        text, meta = parse_rfp(path)
+        texts.append(text)
+        summaries.append(meta)
+        if meta.get("type") == "pdf":
+            total_pages += int(meta.get("pages", 0))
+        else:
+            total_paragraphs += int(meta.get("paragraphs", 0))
+    return "\n\n".join(texts), summaries, total_pages, total_paragraphs
 
 def normalize_models(deck_plan, report):
     if isinstance(deck_plan, dict):
@@ -178,7 +194,12 @@ if st.session_state.wizard_step == 1:
 
     c1, c2 = st.columns(2)
     with c1:
-        rfp_file = st.file_uploader("Upload RFP (PDF/DOCX)", type=["pdf", "docx"], key="rfp_step1")
+        rfp_files = st.file_uploader(
+            "Upload RFP file(s) (PDF/DOCX)",
+            type=["pdf", "docx"],
+            key="rfp_step1",
+            accept_multiple_files=True,
+        )
     with c2:
         ref_txt = st.file_uploader("Optional: Reusable content (TXT) for RAG", type=["txt"], key="ref_step1")
         st.caption("Enable 'Build/Update RAG index' in sidebar to index this TXT.")
@@ -191,20 +212,35 @@ if st.session_state.wizard_step == 1:
             st.error("Embedded template is missing. Please restore templates/standard_proposal_template_v1.pptx")
             st.stop()
 
-        if not rfp_file:
-            st.error("Please upload an RFP file (PDF or DOCX).")
+        if not rfp_files:
+            st.error("Please upload at least one RFP file (PDF or DOCX).")
             st.stop()
 
-        # Save RFP upload
-        rfp_path = save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
-        st.session_state.rfp_path = str(rfp_path)
+        # Save RFP uploads
+        rfp_paths: list[Path] = []
+        for rfp_file in rfp_files:
+            rfp_paths.append(
+                save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
+            )
+        st.session_state.rfp_paths = [str(p) for p in rfp_paths]
 
         # Use embedded template (copy into data/uploads for reproducibility)
         tpl_copy = settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
         tpl_copy.write_bytes(STANDARD_TEMPLATE.read_bytes())
         st.session_state.tpl_path = str(tpl_copy)
 
-        rfp_text = parse_rfp(rfp_path)
+        rfp_text, rfp_summaries, total_pages, total_paragraphs = parse_rfps(rfp_paths)
+
+        if rfp_summaries:
+            st.markdown("**RFP upload summary**")
+            rows = []
+            for s in rfp_summaries:
+                if s.get("type") == "pdf":
+                    rows.append({"File": s["name"], "Type": "PDF", "Count": f'{s.get("pages", 0)} pages'})
+                else:
+                    rows.append({"File": s["name"], "Type": "DOCX", "Count": f'{s.get("paragraphs", 0)} paragraphs'})
+            st.table(rows)
+            st.caption(f"Totals: {total_pages} pages, {total_paragraphs} paragraphs")
 
         # Analyze template layouts/placeholders
         ti = analyze_pptx_template(tpl_copy)
