@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import os
 import streamlit as st
+
+# Map Streamlit secrets to environment variables
+for key in st.secrets:
+    os.environ[key] = str(st.secrets[key])
 
 # Ensure local package imports work when running via `streamlit run app/streamlit_app.py`
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
