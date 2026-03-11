@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rfp2deck-agent"
+version = "0.2.1"
+description = "RFP to Proposal Deck Agent (Streamlit + LangGraph + OpenAI)"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+packages = ["rfp2deck"]
