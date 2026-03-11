@@ -4,10 +4,14 @@ from pathlib import Path
 import sys
 import os
 import streamlit as st
+from streamlit.runtime.secrets import StreamlitSecretNotFoundError
 
-# Map Streamlit secrets to environment variables
-for key in st.secrets:
-    os.environ[key] = str(st.secrets[key])
+# Map Streamlit secrets to environment variables (ignore if no secrets.toml present)
+try:
+    for key, value in st.secrets.items():
+        os.environ[key] = str(value)
+except StreamlitSecretNotFoundError:
+    pass
 
 # Ensure local package imports work when running via `streamlit run app/streamlit_app.py`
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
