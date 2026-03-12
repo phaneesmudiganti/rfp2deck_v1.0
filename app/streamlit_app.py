@@ -113,7 +113,12 @@ with st.sidebar:
     diagram_model = st.text_input("Diagram model", value="gpt-image-1")
     diagram_size = st.selectbox(
         "Diagram size",
-        options=["1024x1024", "1024x768", "768x1024"],
+        options=["auto", "1024x1024", "1024x1536", "1536x1024"],
+        index=0,
+    )
+    diagram_quality = st.selectbox(
+        "Diagram quality",
+        options=["auto", "low", "medium", "high"],
         index=0,
     )
 
@@ -143,6 +148,7 @@ with st.sidebar:
             "template_info",
             "retrieved_context",
             "diagrams_generated",
+            "render_complete",
         ]
         for k in keys:
             if k in st.session_state:
@@ -256,6 +262,21 @@ def wizard_header(step: int):
         st.caption("Tip: Streamlit reruns on every click — state is preserved in session_state.")
 
 
+def render_step_progress(value: float, text: str) -> None:
+    """Render a simple progress bar with a caption for the current step."""
+    st.progress(max(0.0, min(1.0, value)))
+    st.caption(text)
+
+
+def stop_on_error(message: str, status: st.delta_generator.DeltaGenerator | None, exc: Exception):
+    """Show error details, mark status as failed, and stop execution."""
+    if status is not None:
+        status.update(label=message, state="error")
+    st.error(message)
+    st.exception(exc)
+    st.stop()
+
+
 # Guard: if plan missing, force step 1
 if st.session_state.deck_plan is None and st.session_state.wizard_step != 1:
     st.session_state.wizard_step = 1
@@ -267,7 +288,14 @@ st.divider()
 # STEP 1
 # ----------------------------
 if st.session_state.wizard_step == 1:
-    st.subheader("Step 1 — Upload RFP and Generate Deck Plan (Standard Template)")
+    st.subheader("Step 1 - Upload RFP and Generate Deck Plan (Standard Template)")
+    step1_progress_slot = st.empty()
+
+    def show_step1_progress(value: float, text: str) -> None:
+        with step1_progress_slot.container():
+            render_step_progress(value, text)
+
+    show_step1_progress(0.05, "Step 1 progress: waiting for inputs.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -283,12 +311,19 @@ if st.session_state.wizard_step == 1:
         )
         st.caption("Enable 'Build/Update RAG index' in sidebar to index this TXT.")
 
+    if rfp_files:
+        show_step1_progress(0.1, "Step 1 progress: ready to generate plan.")
+
     with st.form("step1_form"):
         submitted = st.form_submit_button(
             "Generate Plan (Step 1)", type="primary", use_container_width=True
         )
 
     if submitted:
+        show_step1_progress(0.15, "Step 1 progress: generating plan...")
+        step_progress = st.progress(0.0)
+        step_status = st.status("Step 1 in progress...", expanded=False)
+        step_progress.progress(0.1)
         if not STANDARD_TEMPLATE.exists():
             st.error(
                 "Embedded template is missing. Please restore templates/standard_proposal_template_v1.pptx"
@@ -299,105 +334,115 @@ if st.session_state.wizard_step == 1:
             st.error("Please upload at least one RFP file (PDF or DOCX).")
             st.stop()
 
-        # Save RFP uploads
-        rfp_paths: list[Path] = []
-        for rfp_file in rfp_files:
-            rfp_paths.append(
-                save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
+        try:
+            # Save RFP uploads
+            rfp_paths: list[Path] = []
+            for rfp_file in rfp_files:
+                rfp_paths.append(
+                    save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
+                )
+            st.session_state.rfp_paths = [str(p) for p in rfp_paths]
+            step_progress.progress(0.3)
+
+            # Use embedded template (copy into data/uploads for reproducibility)
+            tpl_copy = settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
+            tpl_copy.write_bytes(STANDARD_TEMPLATE.read_bytes())
+            st.session_state.tpl_path = str(tpl_copy)
+
+            rfp_text, rfp_summaries, total_pages, total_paragraphs = parse_rfps(rfp_paths)
+            step_progress.progress(0.5)
+
+            if rfp_summaries:
+                st.markdown("**RFP upload summary**")
+                rows = []
+                for s in rfp_summaries:
+                    if s.get("type") == "pdf":
+                        rows.append(
+                            {
+                                "File": s["name"],
+                                "Type": "PDF",
+                                "Count": f'{s.get("pages", 0)} pages',
+                            }
+                        )
+                    else:
+                        rows.append(
+                            {
+                                "File": s["name"],
+                                "Type": "DOCX",
+                                "Count": f'{s.get("paragraphs", 0)} paragraphs',
+                            }
+                        )
+                st.table(rows)
+                st.caption(f"Totals: {total_pages} pages, {total_paragraphs} paragraphs")
+
+            # Analyze template layouts/placeholders
+            ti = analyze_pptx_template(tpl_copy)
+            template_info = {
+                "slide_layout_names": ti.slide_layout_names,
+                "masters": ti.masters,
+                "placeholder_map": ti.placeholder_map,
+            }
+            st.session_state.template_info = template_info
+            st.info(f"Template analyzed: {len(ti.slide_layout_names)} layouts found.")
+            step_progress.progress(0.7)
+
+            # Optional RAG
+            retrieved_context = None
+            rag_dir = settings.data_dir / "indexes" / "default_rag"
+            if ref_txt and build_index:
+                ref_path = save_upload(ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}")
+                ref_text = ref_path.read_text(encoding="utf-8", errors="ignore")
+                chunks = chunk_text(ref_text)
+                rag = build_faiss_index(chunks)
+                save_index(rag, rag_dir)
+                st.success(f"Built RAG index with {len(chunks)} chunks.")
+
+            if rag_dir.exists() and (rag_dir / "index.faiss").exists():
+                rag = load_index(rag_dir)
+                top = retrieve(rag, "reusable proposal content for this RFP", k=6)
+                retrieved_context = "\n\n".join([f"[score={c.score:.3f}]\n{c.text}" for c in top])
+                st.caption("Retrieved reusable context from local RAG index.")
+
+            st.session_state.retrieved_context = retrieved_context
+            step_progress.progress(0.85)
+
+            # Run agent
+            graph = build_graph()
+            state = AgentState(
+                rfp_text=rfp_text,
+                template_info=template_info,
+                retrieved_context=retrieved_context,
             )
-        st.session_state.rfp_paths = [str(p) for p in rfp_paths]
+            state.deck_mode = st.session_state.get("deck_mode")
 
-        # Use embedded template (copy into data/uploads for reproducibility)
-        tpl_copy = settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
-        tpl_copy.write_bytes(STANDARD_TEMPLATE.read_bytes())
-        st.session_state.tpl_path = str(tpl_copy)
+            final_state = graph.invoke(state)
 
-        rfp_text, rfp_summaries, total_pages, total_paragraphs = parse_rfps(rfp_paths)
+            if isinstance(final_state, dict):
+                deck_plan = final_state.get("deck_plan")
+                report = final_state.get("report")
+            else:
+                deck_plan = getattr(final_state, "deck_plan", None)
+                report = getattr(final_state, "report", None)
 
-        if rfp_summaries:
-            st.markdown("**RFP upload summary**")
-            rows = []
-            for s in rfp_summaries:
-                if s.get("type") == "pdf":
-                    rows.append(
-                        {
-                            "File": s["name"],
-                            "Type": "PDF",
-                            "Count": f'{s.get("pages", 0)} pages',
-                        }
-                    )
-                else:
-                    rows.append(
-                        {
-                            "File": s["name"],
-                            "Type": "DOCX",
-                            "Count": f'{s.get("paragraphs", 0)} paragraphs',
-                        }
-                    )
-            st.table(rows)
-            st.caption(f"Totals: {total_pages} pages, {total_paragraphs} paragraphs")
+            if not deck_plan:
+                st.error("Failed to produce a deck plan.")
+                st.stop()
 
-        # Analyze template layouts/placeholders
-        ti = analyze_pptx_template(tpl_copy)
-        template_info = {
-            "slide_layout_names": ti.slide_layout_names,
-            "masters": ti.masters,
-            "placeholder_map": ti.placeholder_map,
-        }
-        st.session_state.template_info = template_info
-        st.info(f"Template analyzed: {len(ti.slide_layout_names)} layouts found.")
+            deck_plan, report = normalize_models(deck_plan, report)
 
-        # Optional RAG
-        retrieved_context = None
-        rag_dir = settings.data_dir / "indexes" / "default_rag"
-        if ref_txt and build_index:
-            ref_path = save_upload(ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}")
-            ref_text = ref_path.read_text(encoding="utf-8", errors="ignore")
-            chunks = chunk_text(ref_text)
-            rag = build_faiss_index(chunks)
-            save_index(rag, rag_dir)
-            st.success(f"Built RAG index with {len(chunks)} chunks.")
+            st.session_state.deck_plan = deck_plan
+            st.session_state.report = report
+            st.session_state.diagrams_generated = False  # reset for new run
+            st.session_state.render_complete = False
+            step_progress.progress(1.0)
+            step_status.update(label="Step 1 complete.", state="complete")
 
-        if rag_dir.exists() and (rag_dir / "index.faiss").exists():
-            rag = load_index(rag_dir)
-            top = retrieve(rag, "reusable proposal content for this RFP", k=6)
-            retrieved_context = "\n\n".join([f"[score={c.score:.3f}]\n{c.text}" for c in top])
-            st.caption("Retrieved reusable context from local RAG index.")
-
-        st.session_state.retrieved_context = retrieved_context
-
-        # Run agent
-        graph = build_graph()
-        state = AgentState(
-            rfp_text=rfp_text,
-            template_info=template_info,
-            retrieved_context=retrieved_context,
-        )
-        state.deck_mode = st.session_state.get("deck_mode")
-
-        final_state = graph.invoke(state)
-
-        if isinstance(final_state, dict):
-            deck_plan = final_state.get("deck_plan")
-            report = final_state.get("report")
-        else:
-            deck_plan = getattr(final_state, "deck_plan", None)
-            report = getattr(final_state, "report", None)
-
-        if not deck_plan:
-            st.error("Failed to produce a deck plan.")
-            st.stop()
-
-        deck_plan, report = normalize_models(deck_plan, report)
-
-        st.session_state.deck_plan = deck_plan
-        st.session_state.report = report
-        st.session_state.diagrams_generated = False  # reset for new run
-
-        # Advance
-        st.session_state.wizard_step = 2 if enable_diagrams else 3
-        st.success("Step 1 complete. Moving to next step…")
-        st.rerun()
+            # Advance
+            st.session_state.wizard_step = 2 if enable_diagrams else 3
+            st.success("Step 1 complete. Moving to next step…")
+            st.rerun()
+        except Exception as exc:
+            stop_on_error("Step 1 failed. See details below.", step_status, exc)
 
     if st.session_state.deck_plan:
         with st.expander("Deck Plan JSON (current session)"):
@@ -444,6 +489,15 @@ if st.session_state.wizard_step == 2:
             st.rerun()
         st.stop()
 
+    total_diagrams, approved_diagrams = count_diagrams(plan)
+    if not st.session_state.diagrams_generated:
+        render_step_progress(0.2, "Step 2 progress: ready to generate diagrams.")
+    elif total_diagrams:
+        ratio = approved_diagrams / max(total_diagrams, 1)
+        render_step_progress(0.6 + 0.4 * ratio, "Step 2 progress: approvals in progress.")
+    else:
+        render_step_progress(0.4, "Step 2 progress: diagrams generated.")
+
     has_diagram_specs = any((s.diagram is not None) for s in plan.slides)
     if not has_diagram_specs:
         st.warning("This plan did not propose any diagrams. You can proceed to Step 3.")
@@ -458,30 +512,47 @@ if st.session_state.wizard_step == 2:
             "Generate / Regenerate Diagrams", type="primary", use_container_width=True
         )
     with colR:
-        st.caption("You can regenerate after changing diagram model/size in the sidebar.")
+        st.caption(
+            "You can regenerate after changing diagram model, size, or quality in the sidebar."
+        )
 
     if gen_clicked:
         diagrams_dir = settings.data_dir / "outputs" / "diagrams"
         diagrams_dir.mkdir(parents=True, exist_ok=True)
 
-        made = 0
-        for s in plan.slides:
-            if not s.diagram:
-                continue
-            out_img = diagrams_dir / f"{s.slide_id}.png"
-            try:
+        slides_with_diagrams = [s for s in plan.slides if s.diagram]
+        total_targets = len(slides_with_diagrams)
+        progress = st.progress(0)
+        status = st.status("Generating diagrams...", expanded=False)
+
+        try:
+            made = 0
+            for idx, s in enumerate(slides_with_diagrams, start=1):
+                if not s.diagram:
+                    continue
+                out_img = diagrams_dir / f"{s.slide_id}.png"
                 generate_diagram_png(
-                    s.diagram.prompt, out_img, model=diagram_model, size=diagram_size
+                    s.diagram.prompt,
+                    out_img,
+                    model=diagram_model,
+                    size=diagram_size,
+                    quality=diagram_quality,
                 )
                 s.diagram.image_path = str(out_img)
                 made += 1
-            except Exception as e:
-                st.warning(f"Diagram generation failed for {s.slide_id}: {e}")
+                status.update(
+                    label=f"Generated {idx}/{total_targets} diagrams",
+                    state="running",
+                )
+                progress.progress(idx / max(total_targets, 1))
 
-        st.session_state.deck_plan = plan
-        st.session_state.diagrams_generated = True
-        st.success(f"Generated {made} diagram(s). Now approve below.")
-        st.rerun()
+            status.update(label="Diagram generation complete.", state="complete")
+            st.session_state.deck_plan = plan
+            st.session_state.diagrams_generated = True
+            st.success(f"Generated {made} diagram(s). Now approve below.")
+            st.rerun()
+        except Exception as exc:
+            stop_on_error("Diagram generation failed. See details below.", status, exc)
 
     any_images = any((s.diagram and s.diagram.image_path) for s in plan.slides)
     if not any_images:
@@ -523,7 +594,11 @@ Kind: `{s.diagram.kind}`""")
 # STEP 3
 # ----------------------------
 if st.session_state.wizard_step == 3:
-    st.subheader("Step 3 — Render PPTX and Download Outputs")
+    st.subheader("Step 3 - Render PPTX and Download Outputs")
+    if st.session_state.get("render_complete"):
+        render_step_progress(1.0, "Step 3 complete: proposal generation finished.")
+    else:
+        render_step_progress(0.2, "Step 3 progress: ready to render.")
 
     if st.session_state.deck_plan is None or st.session_state.tpl_path is None:
         st.error("Missing required state. Please complete Step 1 first.")
@@ -544,35 +619,44 @@ if st.session_state.wizard_step == 3:
     render_now = st.button("Render PPTX", type="primary", use_container_width=True)
 
     if render_now:
+        render_progress = st.progress(0.2)
+        render_status = st.status("Rendering outputs...", expanded=False)
         out_pptx = settings.data_dir / "outputs" / "generated_proposal.pptx"
-        render_deck_from_template(plan, tpl_path, out_pptx)
+        try:
+            render_deck_from_template(plan, tpl_path, out_pptx)
+            render_progress.progress(0.7)
 
-        report_path = settings.data_dir / "reports" / "traceability.json"
-        if st.session_state.report:
-            report_path.write_text(
-                st.session_state.report.model_dump_json(indent=2), encoding="utf-8"
-            )
+            report_path = settings.data_dir / "reports" / "traceability.json"
+            if st.session_state.report:
+                report_path.write_text(
+                    st.session_state.report.model_dump_json(indent=2), encoding="utf-8"
+                )
+            render_progress.progress(1.0)
+            render_status.update(label="Render complete.", state="complete")
+            st.session_state.render_complete = True
 
-        st.success("Rendered PPTX successfully.")
+            st.success("Rendered PPTX successfully.")
 
-        with open(out_pptx, "rb") as f:
-            st.download_button(
-                "Download PPTX",
-                data=f,
-                file_name=out_pptx.name,
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                use_container_width=True,
-            )
-
-        if report_path.exists():
-            with open(report_path, "rb") as f:
+            with open(out_pptx, "rb") as f:
                 st.download_button(
-                    "Download Traceability Report (JSON)",
+                    "Download PPTX",
                     data=f,
-                    file_name=report_path.name,
-                    mime="application/json",
+                    file_name=out_pptx.name,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     use_container_width=True,
                 )
+
+            if report_path.exists():
+                with open(report_path, "rb") as f:
+                    st.download_button(
+                        "Download Traceability Report (JSON)",
+                        data=f,
+                        file_name=report_path.name,
+                        mime="application/json",
+                        use_container_width=True,
+                    )
+        except Exception as exc:
+            stop_on_error("Render failed. See details below.", render_status, exc)
 
     with st.expander("Deck Plan JSON (current session)"):
         st.json(plan.model_dump())

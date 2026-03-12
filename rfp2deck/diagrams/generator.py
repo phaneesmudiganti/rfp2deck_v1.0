@@ -7,10 +7,19 @@ from rfp2deck.llm.openai_client import get_client
 
 
 def generate_diagram_png(
-    prompt: str, out_path: Path, model: str = "gpt-image-1", size: str = "1024x1024"
+    prompt: str,
+    out_path: Path,
+    model: str = "gpt-image-1",
+    size: str = "auto",
+    quality: str = "auto",
 ) -> Path:
     client = get_client()
-    resp = client.images.generate(model=model, prompt=prompt, size=size)
+    resp = client.images.generate(
+        model=model,
+        prompt=prompt,
+        size=size,
+        quality=quality,
+    )
     b64 = resp.data[0].b64_json
     png = base64.b64decode(b64)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -16,6 +16,7 @@ class Settings:
     model_fast: str = os.getenv("OPENAI_MODEL_FAST", "gpt-5-mini")
     embeddings_model: str = os.getenv("OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-large")
     data_dir: Path = Path(os.getenv("APP_DATA_DIR", ".data"))
+    openai_timeout_s: float = float(os.getenv("OPENAI_TIMEOUT_S", "120"))
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

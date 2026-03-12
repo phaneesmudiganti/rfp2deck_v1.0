@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+"""
+LangGraph node implementations for the RFP → Deck agent.
+
+This module:
+- Extracts an RFP understanding (structured)
+- Builds an executive narrative spine
+- Plans a deck (DeckPlan)
+- Applies quality enforcement (required slides, ordering, text polish, diagrams)
+- Produces a traceability report
+
+Design goal: produce a consulting-grade bid-defense / full-proposal deck plan
+that renders cleanly into a standardized template.
+"""
+
 import json
-from datetime import datetime
-from typing import Any, Dict, List
+import re
+from typing import List
 
 from rfp2deck.agent.prompts import (
-    DECK_PLAN_PROMPT,
     DECK_PLAN_V2_PROMPT,
     EXEC_NARRATIVE_PROMPT,
     RFP_UNDERSTAND_PROMPT,
@@ -20,26 +33,40 @@ from rfp2deck.core.schemas import (
     RFPUnderstanding,
     SectionPlan,
     SlideSpec,
-    TraceabilityItem,
-    TraceabilityReport,
 )
 from rfp2deck.llm.structured import response_as_schema
 from rfp2deck.qa.coverage import build_traceability_report
 
 
+# -----------------------------
+# Node 1: Understand the RFP
+# -----------------------------
 def understand_rfp(state: AgentState) -> AgentState:
     prompt = RFP_UNDERSTAND_PROMPT.format(rfp_text=state.rfp_text[:120000])
-    understanding = response_as_schema(prompt, RFPUnderstanding, reasoning_effort="high")
-    state.understanding = understanding
+    state.understanding = response_as_schema(prompt, RFPUnderstanding, reasoning_effort="high")
     return state
 
 
 # -----------------------------
-# v3: quality enforcement helpers
+# Node 2: Executive narrative
 # -----------------------------
-REQUIRED_ARCHETYPES = [
+def build_executive_narrative(state: AgentState) -> AgentState:
+    understanding_json = state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
+    prompt = EXEC_NARRATIVE_PROMPT.format(
+        understanding_json=understanding_json,
+        retrieved_context=(state.retrieved_context or "")[:12000],
+    )
+    state.narrative = response_as_schema(prompt, ExecutiveNarrative, reasoning_effort="high")
+    return state
+
+
+# -----------------------------
+# Required slide skeleton
+# -----------------------------
+REQUIRED_ARCHETYPES: List[tuple[str, str]] = [
     # (allowed archetype literal, slide title)
     ("Solution Overview", "Executive Summary"),
+    ("Customer Context", "Current State & Key Pain Points"),
     ("Customer Context", "Our Understanding of the Objective"),
     ("Requirements", "Key Requirements & Success Criteria"),
     ("Solution Overview", "Solution Approach Overview"),
@@ -47,38 +74,50 @@ REQUIRED_ARCHETYPES = [
     ("Delivery Plan", "Delivery Approach & Governance"),
     ("Timeline", "Implementation Roadmap"),
     ("Risks", "Risks & Mitigations"),
-    ("Team", "Delivery Team"),
+    ("Team", "Proposed Delivery Team"),
     ("Commercials", "Commercials"),
     ("Next Steps", "Next Steps"),
 ]
 
 
+def _tight_id(text: str) -> str:
+    """Create a stable, safe identifier from free-form text."""
+    t = (text or "").strip().lower()
+    t = t.replace("—", "-").replace("→", "-")
+    # Keep letters, numbers, underscore, hyphen, and space.
+    t = re.sub(r"[^a-z0-9_\- ]+", "", t)
+    t = t.replace(" ", "_")
+    return t[:64] if len(t) > 64 else t
+
+
 def _diagram_prompt(kind: str) -> str:
     if kind == "architecture":
         return (
-            "Create a clean corporate Azure reference architecture diagram. "
-            "Three horizontal layers: Channels/Consumers, Services/API, Data/Governance. "
-            "Include labeled boxes: Entra ID, API Management, Event Hub, Data Lake, Purview, Key Vault. "
-            "Use arrows for ingress/egress. White background. No logos."
+            "Create a clean enterprise architecture diagram in consulting style. "
+            "White background, crisp boxes/arrows, minimal text. "
+            "Show layers (channels, services/API, data/governance) and labeled flows."
         )
     if kind == "timeline":
         return (
-            "Create a clean timeline diagram with 3 phases: MVP, Extension, Scale/Hardening. "
-            "Add milestone markers M1–M6. White background. No logos."
+            "Create a clean roadmap timeline with phases and milestone markers. "
+            "White background, crisp shapes, minimal text. No logos."
         )
     if kind == "data_model":
         return (
-            "Create a conceptual data domain diagram for a canonical learner profile. "
-            "Boxes: Learner Identity, Skills, Credentials, Roles/Occupations, Proficiency, Activity/Signals, Consent/Provenance. "
-            "Show relationships with arrows. White background. No logos."
+            "Create a clean conceptual data model diagram showing key entities/domains and relationships. "
+            "White background, crisp boxes/arrows, minimal text. No logos."
+        )
+    if kind == "org":
+        return (
+            "Create a professional delivery team org chart. "
+            "White background. Roles in boxes with reporting/coordination lines. Minimal text."
         )
     return "Create a clean corporate diagram. White background. No logos."
 
 
-def _appendix_arch_diagram(
-    view_name: str, understanding: RFPUnderstanding | None = None
-) -> DiagramSpec:
-    """Create a professional enterprise-style diagram prompt for appendix architecture views."""
+def _appendix_arch_diagram(view_name: str, understanding: RFPUnderstanding | None = None) -> DiagramSpec:
+    """Appendix deep-dive diagrams (functional/application/technical/data)."""
+    cust = "Customer"
     context = ""
     if understanding:
         cust = (
@@ -86,72 +125,83 @@ def _appendix_arch_diagram(
             or getattr(understanding, "customer", None)
             or "Customer"
         )
-        goal = getattr(understanding, "goal", None) or getattr(understanding, "summary", None) or ""
-        if not goal:
-            obj = getattr(understanding, "objectives", None)
-            if isinstance(obj, list):
-                goal = " / ".join([str(x) for x in obj[:3]])
-            elif isinstance(obj, str):
-                goal = obj
-        context = f" Customer: {cust}. Goal: {str(goal).strip()[:240]}."
+        summary = (
+            getattr(understanding, "summary", None)
+            or getattr(understanding, "problem_statement", None)
+            or ""
+        )
+        summary = str(summary).strip()
+        if summary:
+            context = f" Context: {summary[:220]}."
+
     return DiagramSpec(
         kind="architecture",
         prompt=(
-            f"Create a clean, professional {view_name} diagram for an RFP proposal deck."
-            f"{context} Use an enterprise consulting style: white background, crisp boxes/arrows, "
-            f"clear labels, minimal text. Show major components and data/control flows. "
-            f"Azure-first where relevant. No clutter."
+            f"Create a clean, professional {view_name} diagram for an RFP proposal deck for {cust}."
+            f"{context} Use enterprise consulting style: white background, crisp boxes/arrows, "
+            f"clear labels, minimal text. Show major components and flows. No clutter."
         ),
         image_path=None,
         approved=False,
     )
 
 
-def ensure_diagrams_for_key_slides(
-    deck_plan: DeckPlan, understanding: RFPUnderstanding | None = None
-) -> DeckPlan:
-    """Guarantee that key slides carry DiagramSpec prompts so Step-2 can generate previews.
-    Guarded approval remains required (approved defaults to False)."""
-
-    cust = (
-        getattr(understanding, "customer_name", None)
-        or getattr(understanding, "customer", None)
-        or "Customer"
-    )
-    summary = (
-        getattr(understanding, "summary", None)
-        or getattr(understanding, "problem_statement", None)
-        or ""
-    )
-    summary = str(summary).strip()
+def ensure_diagrams_for_key_slides(deck_plan: DeckPlan, understanding: RFPUnderstanding | None = None) -> DeckPlan:
+    """Ensure key slides always have DiagramSpec prompts so Step-2 can generate previews."""
+    cust = "Customer"
+    summary = ""
+    if understanding:
+        cust = (
+            getattr(understanding, "customer_name", None)
+            or getattr(understanding, "customer", None)
+            or "Customer"
+        )
+        summary = (
+            getattr(understanding, "summary", None)
+            or getattr(understanding, "problem_statement", None)
+            or ""
+        )
+        summary = str(summary).strip()
 
     for s in deck_plan.slides:
-        arch = (getattr(s, "archetype", "") or "").strip().lower()
+        archetype = (getattr(s, "archetype", "") or "").strip().lower()
         title = (getattr(s, "title", "") or "").strip()
 
-        if arch == "architecture" and getattr(s, "diagram", None) is None:
+        # Architecture visuals
+        if archetype == "architecture" and getattr(s, "diagram", None) is None:
             view = title or "Architecture"
             s.diagram = DiagramSpec(
                 kind="architecture",
                 prompt=(
                     f"Create a clean, professional {view} diagram for {cust}. "
                     f"{('Context: ' + summary + '. ') if summary else ''}"
-                    "Use enterprise consulting style: white background, crisp boxes/arrows, minimal text. "
+                    "Enterprise consulting style: white background, crisp boxes/arrows, minimal text. "
                     "Show key components and labeled flows. Azure-first where relevant. No clutter."
                 ),
                 image_path=None,
                 approved=False,
             )
 
-        if arch == "team" and getattr(s, "diagram", None) is None:
+        # Team slide as an org/RACI visual
+        if archetype == "team" and getattr(s, "diagram", None) is None:
             s.diagram = DiagramSpec(
-                kind="org_chart",
+                kind="org",
                 prompt=(
-                    f"Create a professional team org chart for delivering the engagement for {cust}. "
-                    "Show roles and accountability lanes: Executive Sponsor, Delivery Manager, Solution Architect, "
-                    "Data Architect, Security Lead, DevOps/Platform Engineer, Data Engineer, QA, Business Analyst. "
-                    "Use clean boxes and reporting/coordination arrows. White background. Minimal text."
+                    f"Create a professional delivery team org chart for {cust}. "
+                    "Include lanes/roles: Executive Sponsor, Engagement Lead, Delivery Manager, "
+                    "Solution Architect, Application Architect, Data Architect, Security Lead, "
+                    "DevOps/Platform, Developers, Data Engineers, QA, Business Analyst. "
+                    "Use clean boxes and coordination arrows. White background. Minimal text."
                 ),
+                image_path=None,
+                approved=False,
+            )
+
+        # Timeline slides should be visual if missing
+        if archetype == "timeline" and getattr(s, "diagram", None) is None:
+            s.diagram = DiagramSpec(
+                kind="timeline",
+                prompt=_diagram_prompt("timeline"),
                 image_path=None,
                 approved=False,
             )
@@ -160,410 +210,159 @@ def ensure_diagrams_for_key_slides(
 
 
 def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
-    """Ensure a professional bid-defense skeleton exists using allowed archetypes.
-    Adds missing universally-required sections and creates a table-based acceptance criteria slide.
-    """
+    """Ensure a consulting-grade skeleton exists using allowed archetypes."""
+    def norm(x: str) -> str:
+        return (x or "").strip().lower()
 
-    def _norm(s: str) -> str:
-        return (s or "").strip().lower()
+    def has_archetype(a: str) -> bool:
+        return any(norm(s.archetype) == norm(a) for s in deck_plan.slides)
 
-    def _has_archetype(archetype: str) -> bool:
-        return any(_norm(s.archetype) == _norm(archetype) for s in deck_plan.slides)
+    def has_title_exact(title: str) -> bool:
+        t = norm(title)
+        return any(norm(s.title) == t for s in deck_plan.slides)
 
-    def _has_title_contains(substr: str) -> bool:
-        sub = _norm(substr)
-        return any(sub in _norm(s.title) for s in deck_plan.slides)
-
-    def _add(
+    def add_slide(
         archetype: str,
         title: str,
         bullets: List[str] | None = None,
-        *,
+        diagram: DiagramSpec | None = None,
         table: dict | None = None,
         notes: str | None = None,
-        diagram: DiagramSpec | None = None,
-    ):
-        slide_id = "auto_" + _norm(title).replace("—", "-").replace("→", "-").replace(
-            "(", ""
-        ).replace(")", "").replace(" ", "_")
+    ) -> None:
         deck_plan.slides.append(
             SlideSpec(
-                slide_id=slide_id,
+                slide_id=f"auto_{_tight_id(title)}",
                 title=title,
                 archetype=archetype,
                 bullets=bullets or [],
+                diagram=diagram,
                 table=table,
                 notes=notes,
-                diagram=diagram,
             )
         )
 
-    # Title should exist
-    if not _has_archetype("Title"):
-        _add(
+    # Title / Agenda if missing
+    if not has_archetype("Title"):
+        add_slide(
             "Title",
             "Proposal — Bid Defense",
-            ["Prepared for: Customer", "Prepared by: HCL", "Date:"],
+            ["Prepared for: Customer", "Prepared by: HCL", "Date: "],
         )
 
-    # Agenda (must be early)
-    if not _has_archetype("Agenda"):
-        _add(
+    if not has_archetype("Agenda"):
+        add_slide(
             "Agenda",
             "Agenda",
             [
                 "Executive Summary",
-                "Customer Context",
+                "Current State & Objectives",
                 "Requirements & Success Criteria",
                 "Solution Overview",
                 "Architecture",
-                "Delivery Plan & Timeline",
-                "Risks",
-                "Team",
-                "Commercials",
-                "Next Steps",
+                "Delivery Plan & Roadmap",
+                "Risks, Team, Commercials, Next Steps",
             ],
         )
 
-    # Executive Summary (Solution Overview archetype)
-    if not _has_title_contains("executive summary"):
-        _add(
-            "Solution Overview",
-            "Executive Summary",
-            [
-                "Accelerate readiness with a governed canonical learner profile.",
-                "De-risk delivery via contract-first schemas and milestone approvals.",
-                "Embed security, privacy, and explainability from day one.",
-                "Deliver implementation-ready artifacts, not theoretical designs.",
-            ],
-        )
+    # Required archetype/title pairs
+    for archetype, title in REQUIRED_ARCHETYPES:
+        if not has_title_exact(title):
+            bullets: List[str] = []
+            diagram: DiagramSpec | None = None
 
-    # Customer Context (at least 2 slides)
-    cc_slides = [s for s in deck_plan.slides if _norm(s.archetype) == "customer context"]
-    if len(cc_slides) == 0:
-        _add(
-            "Customer Context",
-            "Pearson Objectives & Decision Drivers",
-            [
-                "What success looks like for SIE and Learner Data Profile initiatives.",
-                "Key stakeholders, constraints, and decision criteria for approval.",
-                "Operating assumptions and scope boundaries from the RFP.",
-            ],
-        )
-        _add(
-            "Customer Context",
-            "Current Landscape & Constraints",
-            [
-                "Systems, data sources, and integration touchpoints impacting the LDP.",
-                "Security, privacy, governance, and regulatory constraints.",
-                "Risks/complexities to control early via contract-first approach.",
-            ],
-        )
-    elif len(cc_slides) == 1:
-        _add(
-            "Customer Context",
-            "Current Landscape & Constraints",
-            [
-                "Systems, data sources, and integration touchpoints impacting the LDP.",
-                "Security, privacy, governance, and regulatory constraints.",
-                "Risks/complexities to control early via contract-first approach.",
-            ],
-        )
+            if title == "Executive Summary":
+                bullets = [
+                    "Outcome: accelerate delivery with governed target architecture and roadmap",
+                    "Approach: milestone-based delivery with strong governance and risk control",
+                    "Value: faster time-to-value, reduced delivery risk, audit-ready compliance",
+                    "Next: align on scope, milestones, and decision points",
+                ]
+            elif title == "Current State & Key Pain Points":
+                bullets = [
+                    "Current constraints, operational friction, and delivery bottlenecks",
+                    "Risk drivers: data, integration, security/compliance, and change impact",
+                    "What must improve to meet business outcomes and timelines",
+                ]
+            elif title == "Reference Architecture":
+                bullets = [
+                    "Target architecture aligned to RFP scope and non-functional requirements",
+                    "Secure integration and governance by design",
+                    "Extensible foundation to support future capabilities",
+                ]
+                diagram = DiagramSpec(kind="architecture", prompt=_diagram_prompt("architecture"), image_path=None, approved=False)
+            elif title == "Implementation Roadmap":
+                bullets = [
+                    "Phased milestones with measurable deliverables",
+                    "Early de-risking: discovery, prototypes, and architecture decisions",
+                    "Progressive hardening: security, performance, and operations readiness",
+                ]
+                diagram = DiagramSpec(kind="timeline", prompt=_diagram_prompt("timeline"), image_path=None, approved=False)
+            elif title == "Proposed Delivery Team":
+                bullets = [
+                    "Balanced leadership + architecture + engineering + QA capability",
+                    "Clear ownership and accountability across workstreams",
+                    "Onshore/offshore mix aligned to delivery cadence and governance",
+                ]
+                diagram = DiagramSpec(kind="org", prompt=_diagram_prompt("org"), image_path=None, approved=False)
+            elif title == "Commercials":
+                bullets = [
+                    "Commercial model aligned to scope, milestones, and governance",
+                    "Transparent assumptions, dependencies, and change control",
+                    "Commercial options available for delivery pace and risk profile",
+                ]
 
-    # Requirements: ensure an acceptance criteria table slide exists
-    if not any((_norm(s.archetype) == "requirements" and s.table) for s in deck_plan.slides):
-        _add(
-            "Requirements",
-            "Definition of Success — Acceptance Criteria & Evidence",
-            bullets=[],
-            table={
-                "headers": [
-                    "Acceptance Criterion",
-                    "Evidence / Artifact",
-                    "Approver",
-                    "When",
-                ],
-                "rows": [
-                    [
-                        "Canonical LDP defined",
-                        "Data model + glossary + conventions",
-                        "Pearson SIE leads",
-                        "M1/M2",
-                    ],
-                    [
-                        "Contracts versioned",
-                        "Schema registry + version policy",
-                        "Architecture board",
-                        "M2",
-                    ],
-                    [
-                        "Security & privacy by design",
-                        "Threat model + controls mapping",
-                        "Security",
-                        "M2/M3",
-                    ],
-                    [
-                        "Implementation-ready outputs",
-                        "HLD/LLD + reference patterns",
-                        "Delivery owners",
-                        "M3+ ",
-                    ],
-                ],
-            },
-            notes="Use this as the bid-defense success rubric; keep it crisp.",
-        )
-
-    # Ensure always-present sections
-    if not _has_archetype("Architecture"):
-        _add(
-            "Architecture",
-            "Reference Architecture Overview",
-            ["End-to-end view of contract-first canonical model and integrations."],
-            diagram=_diagram_prompt(
-                "architecture",
-                "End-to-end contract-first learner data profile reference architecture.",
-            ),
-        )
-    if not _has_archetype("Delivery Plan"):
-        _add(
-            "Delivery Plan",
-            "Delivery Plan & Governance",
-            ["Phased delivery with milestone reviews, sign-offs, and change control."],
-        )
-    if not _has_archetype("Timeline"):
-        _add(
-            "Timeline",
-            "Timeline & Milestones",
-            ["High-level timeline for M1–M6 with review gates and decision points."],
-        )
-    if not _has_archetype("Risks"):
-        _add(
-            "Risks",
-            "Risks & Mitigations",
-            ["Key risks, mitigations, and governance controls."],
-        )
-    if not _has_archetype("Team"):
-        _add(
-            "Team",
-            "Delivery Team",
-            ["Program leadership, architecture, data governance, and security roles."],
-        )
-    if not _has_archetype("Commercials"):
-        _add(
-            "Commercials",
-            "Commercials",
-            [
-                "Option A: Milestone-based fixed price",
-                "Option B: T&M with capped milestones",
-                "Option C: Outcome-based hybrid",
-                "Assumptions: access, SMEs, environments, and approvals.",
-            ],
-        )
-    if not _has_archetype("Next Steps"):
-        _add(
-            "Next Steps",
-            "Next Steps",
-            [
-                "Confirm scope + milestones",
-                "Agree governance + sign-off cadence",
-                "Kickoff and mobilize team",
-            ],
-        )
+            add_slide(archetype, title, bullets=bullets, diagram=diagram)
 
     return deck_plan
 
 
-def enforce_slide_budget(
-    deck_plan: DeckPlan,
-    min_slides: int = 14,
-    max_slides: int = 18,
-    deck_mode: str | None = None,
-    understanding: RFPUnderstanding | None = None,
-) -> DeckPlan:
-    """Mode-aware sizing:
-    - Bid Defense: clamp to 14–18 slides
-    - Full Proposal: core (14–18) + appendix (10–20) including architecture deep dives.
-    Appendix diagrams remain guarded (approved=False)."""
-
-    def key(s: SlideSpec) -> str:
-        return (s.archetype or "").strip().lower()
-
-    deck_plan.slides = [
-        s for s in deck_plan.slides if not (s.slide_id or "").startswith("divider_")
-    ]
-
-    if deck_mode and ("Full Proposal" in str(deck_mode) or str(deck_mode).startswith("Full")):
-        core = deck_plan.model_copy(deep=True)
-        core.slides = [s for s in deck_plan.slides]
-        protected = {"title", "agenda", "team", "commercials", "next steps"}
-
-        while len(core.slides) > max_slides:
-            removed = False
-            for i in range(len(core.slides) - 1, -1, -1):
-                if key(core.slides[i]) not in protected:
-                    core.slides.pop(i)
-                    removed = True
-                    break
-            if not removed:
-                break
-
-        while len(core.slides) < min_slides:
-            idx = len(core.slides) + 1
-            core.slides.append(
-                SlideSpec(
-                    slide_id=f"core_support_{idx}",
-                    title=f"Supporting Detail {idx}",
-                    archetype="Content",
-                    bullets=["Supporting detail for Q&A (core)."],
-                    diagram=None,
-                )
-            )
-
-        appendix: list[SlideSpec] = []
-
-        views = [
-            ("Functional Architecture", "Functional Architecture"),
-            ("Application Architecture", "Application Architecture"),
-            ("Technical Architecture", "Technical Architecture"),
-            ("Data Architecture", "Data Architecture"),
-        ]
-        for title, view_name in views:
-            appendix.append(
-                SlideSpec(
-                    slide_id="appendix_" + view_name.lower().replace(" ", "_"),
-                    title=title,
-                    archetype="Architecture",
-                    bullets=[
-                        "Deep-dive view to support technical Q&A.",
-                        "Key components, responsibilities, and interfaces.",
-                        "Operational/security/governance considerations.",
-                    ],
-                    diagram=_appendix_arch_diagram(view_name, understanding=understanding),
-                )
-            )
-
-        core_ids = {s.slide_id for s in core.slides}
-        extras = [s for s in deck_plan.slides if s.slide_id not in core_ids]
-        prio = {
-            "architecture": 0,
-            "requirements": 1,
-            "delivery plan": 2,
-            "timeline": 3,
-            "customer context": 4,
-            "content": 5,
-        }
-        extras.sort(key=lambda s: prio.get(key(s), 99))
-
-        for s in extras:
-            if len(appendix) >= 20:
-                break
-            if any(
-                (s.title or "").strip().lower() == (a.title or "").strip().lower() for a in appendix
-            ):
-                continue
-            s2 = s.model_copy(deep=True) if hasattr(s, "model_copy") else s
-            s2.slide_id = "appendix_" + (s2.slide_id or "extra")
-            appendix.append(s2)
-
-        while len(appendix) < 10:
-            idx = len(appendix) + 1
-            appendix.append(
-                SlideSpec(
-                    slide_id=f"appendix_support_{idx}",
-                    title=f"Appendix — Supporting Detail {idx}",
-                    archetype="Content",
-                    bullets=["Additional backup material for Q&A."],
-                    diagram=None,
-                )
-            )
-
-        deck_plan.slides = core.slides + appendix
-        return deck_plan
-
-    protected = {"title", "agenda", "team", "commercials", "next steps"}
-
-    while len(deck_plan.slides) > max_slides:
-        removed = False
-        for i in range(len(deck_plan.slides) - 1, -1, -1):
-            if key(deck_plan.slides[i]) not in protected:
-                deck_plan.slides.pop(i)
-                removed = True
-                break
-        if not removed:
-            break
-
-    while len(deck_plan.slides) < min_slides:
-        idx = len(deck_plan.slides) + 1
-        deck_plan.slides.append(
-            SlideSpec(
-                slide_id=f"appendix_{idx}",
-                title=f"Appendix — Supporting Detail {idx}",
-                archetype="Content",
-                bullets=["Additional supporting material for Q&A."],
-                diagram=None,
-            )
-        )
-
-    return deck_plan
+# -----------------------------
+# Ordering + polish
+# -----------------------------
+def _is_exec_summary(slide: SlideSpec) -> bool:
+    t = (getattr(slide, "title", "") or "").strip().lower()
+    return t == "executive summary" or t.startswith("executive summary")
 
 
-def build_exec_narrative(state: AgentState) -> AgentState:
-    prompt = EXEC_NARRATIVE_PROMPT.format(
-        understanding_json=(
-            state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
-        ),
-        retrieved_context=(state.retrieved_context or "")[:12000],
-    )
-    narrative = response_as_schema(prompt, ExecutiveNarrative, reasoning_effort="high")
-    state.narrative = narrative  # type: ignore[attr-defined]
-    return state
+def _context_priority(title: str) -> int:
+    t = (title or "").strip().lower()
+    if "current state" in t or "pain" in t:
+        return 0
+    if "objective" in t or "understanding" in t:
+        return 1
+    return 2
 
 
-def compress_deck_plan(state: AgentState) -> AgentState:
-    if not state.deck_plan:
-        return state
-    prompt = SLIDE_COMPRESSION_PROMPT.format(
-        deck_plan_json=state.deck_plan.model_dump_json(indent=2)
-    )
-    compressed = response_as_schema(prompt, DeckPlan, reasoning_effort="high")
-
-    old_by_id = {s.slide_id: s for s in state.deck_plan.slides}
-    for s in compressed.slides:
-        old = old_by_id.get(s.slide_id)
-        if old and old.diagram and s.diagram:
-            s.diagram.image_path = old.diagram.image_path
-            s.diagram.approved = old.diagram.approved
-
-    state.deck_plan = compressed
-    return state
-
-
-def derive_sections(state: AgentState) -> AgentState:
-    """Derive an RFP-specific section taxonomy (within 14–18 slides), including Team and Commercials."""
-    understanding_json = (
-        state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
-    )
-    prompt = SECTION_PLAN_PROMPT.format(
-        understanding_json=understanding_json,
-        retrieved_context=(state.retrieved_context or "")[:12000],
-    )
-    section_plan = response_as_schema(prompt, SectionPlan, reasoning_effort="high")
-    # Defensive clamp (in case model drifts)
-    try:
-        target = int(getattr(section_plan, "slide_count_target", 16) or 16)
-    except Exception:
-        target = 16
-    section_plan.slide_count_target = max(14, min(18, target))
-    state.section_plan = section_plan
-    return state
+def _arch_priority(title: str) -> int:
+    t = (title or "").strip().lower()
+    # If you generate appendix deep-dives, keep them in a sensible order
+    if "functional" in t:
+        return 0
+    if "application" in t or "integration" in t:
+        return 1
+    if "technical" in t or "infrastructure" in t:
+        return 2
+    if "data" in t:
+        return 3
+    if "reference" in t:
+        return 4
+    return 5
 
 
 def order_deck(deck_plan: DeckPlan) -> DeckPlan:
-    """Order slides into a professional narrative. Keeps relative order within the same archetype."""
+    """
+    Order slides into a consulting narrative.
+
+    Global archetype flow:
+    Title → Agenda → Executive Summary → Context → Requirements → Solution → Architecture
+    → Delivery → Timeline → Risks → Case Studies → Team → Commercials → Next Steps → Content
+
+    Within archetypes, apply priorities (e.g., Current State first in Customer Context).
+    """
     order = [
         "Title",
         "Agenda",
-        "Solution Overview",  # includes Executive Summary
+        "Solution Overview",
         "Customer Context",
         "Requirements",
         "Architecture",
@@ -577,17 +376,38 @@ def order_deck(deck_plan: DeckPlan) -> DeckPlan:
         "Content",
     ]
     rank = {a.lower(): i for i, a in enumerate(order)}
+
     indexed = list(enumerate(deck_plan.slides))
-    indexed.sort(key=lambda ix: (rank.get((ix[1].archetype or "").lower(), 999), ix[0]))
+
+    def sort_key(ix):
+        i, s = ix
+        archetype = (getattr(s, "archetype", "") or "").lower()
+        title = (getattr(s, "title", "") or "")
+
+        base = rank.get(archetype, 999)
+
+        # Special-case within Solution Overview: Exec Summary always first
+        intra = 10
+        if archetype == "solution overview":
+            intra = 0 if _is_exec_summary(s) else 1
+
+        # Customer Context: Current State → Objective → other
+        if archetype == "customer context":
+            intra = _context_priority(title)
+
+        # Architecture: functional → application → technical → data → reference → other
+        if archetype == "architecture":
+            intra = _arch_priority(title)
+
+        return (base, intra, i)
+
+    indexed.sort(key=sort_key)
     deck_plan.slides = [s for _, s in indexed]
     return deck_plan
 
 
-import re
-
-
 def _strip_milestone_prefix(title: str) -> str:
-    return re.sub(r"^M\d+\s*[—:-]\s*", "", title or "")
+    return re.sub(r"^M\\d+\\s*[—:-]\\s*", "", title or "")
 
 
 def _tighten_title(title: str, max_words: int = 10) -> str:
@@ -601,7 +421,7 @@ def _tighten_title(title: str, max_words: int = 10) -> str:
 
 
 def _tighten_bullet(b: str, max_words: int = 14) -> str:
-    s = " ".join(str(b).replace("\n", " ").split()).strip()
+    s = " ".join(str(b).replace("\\n", " ").split()).strip()
     if not s:
         return s
     if s.endswith("."):
@@ -613,17 +433,19 @@ def _tighten_bullet(b: str, max_words: int = 14) -> str:
 
 
 def polish_deck_text(deck_plan: DeckPlan) -> DeckPlan:
+    """Apply consistent consulting edit rules."""
     for sl in deck_plan.slides:
         sl.title = _tighten_title(_strip_milestone_prefix(sl.title), 10)
+
         bullets = sl.bullets or []
 
-        # Executive Summary strengthening
-        if sl.archetype == "Solution Overview" and "executive" in sl.title.lower():
+        # Executive Summary: keep strong, consulting-style bullets
+        if sl.archetype == "Solution Overview" and "executive" in (sl.title or "").lower():
             bullets = [
-                "Accelerate SIE readiness with a governed canonical learner profile.",
-                "De-risk delivery via contract-first schemas and milestone approvals.",
-                "Embed security, privacy, and explainability from day one.",
-                "Deliver implementation-ready artifacts, not theoretical designs.",
+                "Accelerate delivery with a governed target architecture and roadmap",
+                "De-risk execution via milestone-based delivery and decision gates",
+                "Embed security, privacy, and compliance from day one",
+                "Deliver implementation-ready artifacts, not theoretical designs",
             ]
 
         max_bullets = 4
@@ -632,15 +454,55 @@ def polish_deck_text(deck_plan: DeckPlan) -> DeckPlan:
 
         bullets = bullets[:max_bullets]
         sl.bullets = [_tighten_bullet(b, 14) for b in bullets if str(b).strip()]
+
     return deck_plan
 
 
-def insert_section_dividers(deck_plan: DeckPlan) -> DeckPlan:
-    """v4.4: Section dividers are disabled by default to stay within 14–18 slide bid-defense budget.
-    (Section framing is handled via strong titles + first slide in each section.)"""
-    return deck_plan
+# -----------------------------
+# Section plan (optional node)
+# -----------------------------
+def derive_sections(state: AgentState) -> AgentState:
+    """Derive an RFP-specific section taxonomy (within 14–18 slides), incl. Team & Commercials."""
+    understanding_json = state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
+    prompt = SECTION_PLAN_PROMPT.format(
+        understanding_json=understanding_json,
+        retrieved_context=(state.retrieved_context or "")[:12000],
+    )
+    section_plan = response_as_schema(prompt, SectionPlan, reasoning_effort="high")
+
+    # Defensive clamp
+    target = int(getattr(section_plan, "slide_count_target", 16) or 16)
+    section_plan.slide_count_target = max(14, min(18, target))
+
+    state.section_plan = section_plan
+    return state
 
 
+# -----------------------------
+# Compression (optional node)
+# -----------------------------
+def compress_deck_plan(state: AgentState) -> AgentState:
+    if not state.deck_plan:
+        return state
+
+    prompt = SLIDE_COMPRESSION_PROMPT.format(deck_plan_json=state.deck_plan.model_dump_json(indent=2))
+    compressed = response_as_schema(prompt, DeckPlan, reasoning_effort="high")
+
+    # Preserve diagram approvals/paths
+    old_by_id = {s.slide_id: s for s in state.deck_plan.slides}
+    for s in compressed.slides:
+        old = old_by_id.get(s.slide_id)
+        if old and old.diagram and s.diagram:
+            s.diagram.image_path = old.diagram.image_path
+            s.diagram.approved = old.diagram.approved
+
+    state.deck_plan = compressed
+    return state
+
+
+# -----------------------------
+# Node 3: Plan the deck
+# -----------------------------
 def plan_deck(state: AgentState) -> AgentState:
     ti = state.template_info or {}
     layout_names = ti.get("slide_layout_names", [])
@@ -654,28 +516,26 @@ def plan_deck(state: AgentState) -> AgentState:
         layout_names=json.dumps(layout_names, ensure_ascii=False),
         placeholder_map=json.dumps(placeholder_map, ensure_ascii=False)[:6000],
         retrieved_context=(state.retrieved_context or "")[:12000],
-        understanding_json=(
-            state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
-        ),
+        understanding_json=(state.understanding.model_dump_json(indent=2) if state.understanding else "{}"),
         narrative_json=narrative_json,
     )
 
     deck_plan = response_as_schema(prompt, DeckPlan, reasoning_effort="high")
+
     deck_plan = ensure_required_slides(deck_plan)
     deck_plan = order_deck(deck_plan)
     deck_plan = polish_deck_text(deck_plan)
-    deck_plan = enforce_slide_budget(
-        deck_plan, 14, 18, deck_mode=state.deck_mode, understanding=state.understanding
-    )
     deck_plan = ensure_diagrams_for_key_slides(deck_plan, understanding=state.understanding)
 
     state.deck_plan = deck_plan
     return state
 
 
+# -----------------------------
+# Node 4: QA + Traceability
+# -----------------------------
 def qa_and_report(state: AgentState) -> AgentState:
     if not state.understanding or not state.deck_plan:
         return state
-    report = build_traceability_report(state.understanding, state.deck_plan)
-    state.report = report
+    state.report = build_traceability_report(state.understanding, state.deck_plan)
     return state

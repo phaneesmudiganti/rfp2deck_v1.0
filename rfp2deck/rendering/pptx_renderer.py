@@ -2,41 +2,69 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Optional, Tuple
 
 from pptx import Presentation
-from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
 # -------------------------------------------------
-# Geometry + Layout Constants (Consistent)
+# Consulting-style constants (16:9 safe)
 # -------------------------------------------------
+LEFT_MARGIN_IN = 0.75
+RIGHT_MARGIN_IN = 0.75
 
-LEFT_MARGIN = 0.75
-RIGHT_MARGIN = 0.75
-TOP_Y = 1.55
-BOTTOM_MARGIN = 0.55
-SIDE_BY_SIDE_TEXT_RATIO = 0.38  # smaller text region
-SIDE_BY_SIDE_IMAGE_RATIO = 0.62  # larger image region
-GAP = 0.25
+TITLE_X_IN = LEFT_MARGIN_IN
+TITLE_Y_IN = 0.60
+TITLE_H_IN = 0.75
+
+CONTENT_TOP_Y_IN = 1.45
+BOTTOM_MARGIN_IN = 0.45
+
+# 3-zone layout when diagram exists:
+#   Title (top band)
+#   Diagram (big middle)
+#   Bullets (bottom band)
+DIAGRAM_Y_IN = 1.55
+DIAGRAM_H_IN = 3.75
+BULLETS_Y_IN = 5.45
+BULLETS_H_IN = 1.60
+
+MAX_BULLETS = 6
+MAX_BULLET_CHARS = 120
+
+FONT_TITLE_PT = 28
+FONT_BODY_START_PT = 18
+FONT_BODY_MIN_PT = 12
 
 
 # -------------------------------------------------
-# Helpers
+# Layout helpers
 # -------------------------------------------------
+def _find_blank_layout(prs: Presentation):
+    """Pick a layout that won't bring master/layout marker text into edit mode."""
+    # Try common names first
+    for layout in prs.slide_layouts:
+        name = (getattr(layout, "name", "") or "").lower()
+        if "blank" in name or "empty" in name:
+            return layout
 
-
-def _clear_text_placeholders(slide):
-    for shape in slide.shapes:
+    # Fallback: fewest placeholders
+    best = prs.slide_layouts[0]
+    best_cnt = 10**9
+    for layout in prs.slide_layouts:
         try:
-            if getattr(shape, "is_placeholder", False) and shape.has_text_frame:
-                shape.text_frame.clear()
+            cnt = len(layout.placeholders)
         except Exception:
-            continue
+            cnt = 999
+        if cnt < best_cnt:
+            best = layout
+            best_cnt = cnt
+    return best
 
 
 def _clear_all_text(slide):
+    """Clear any text frames on the newly created slide to avoid template markers."""
     for shape in slide.shapes:
         try:
             if getattr(shape, "has_text_frame", False):
@@ -45,69 +73,26 @@ def _clear_all_text(slide):
             continue
 
 
-def _estimate_lines(text: str, approx_chars_per_line: int) -> int:
-    if not text:
-        return 0
-    return max(1, math.ceil(len(text) / max(1, approx_chars_per_line)))
-
-
-def _estimate_bullets_height(bullets: list[str], font_pt: int, box_w_in: float) -> float:
-    chars_per_inch_at_18 = 10
-    chars_per_inch = chars_per_inch_at_18 * (18 / max(8, font_pt))
-    approx_chars_per_line = int(max(18, box_w_in * chars_per_inch))
-
-    lines = 0
-    for b in bullets or []:
-        lines += _estimate_lines(str(b), approx_chars_per_line)
-
-    line_height_in = (font_pt * 1.25) / 72.0
-    return lines * line_height_in + 0.2
-
-
-def _fit_font(bullets, box_w_in, box_h_in, start=18, minimum=12):
-    size = start
-    while size > minimum:
-        if _estimate_bullets_height(bullets, size, box_w_in) <= box_h_in:
-            return size
-        size -= 1
-    return minimum
-
-
-def _fit_image(slide, image_path: Path, x, y, w, h):
-    pic = slide.shapes.add_picture(str(image_path), x, y)
-    img_w, img_h = pic.width, pic.height
-
-    if img_w == 0 or img_h == 0:
-        return pic
-
-    scale = min(w / img_w, h / img_h)
-    pic.width = int(img_w * scale)
-    pic.height = int(img_h * scale)
-
-    pic.left = x + int((w - pic.width) / 2)
-    pic.top = y + int((h - pic.height) / 2)
-    return pic
-
-
 def _remove_marker_shapes(slide):
     """
-    Remove any template marker text boxes like {{TITLE}}, {{BODY}}, etc.
-    These sometimes remain visible in edit mode.
+    Remove obvious marker text boxes like {{TITLE}}, {{CONTENT}} if present on the slide itself.
+    Note: master/layout markers can’t be safely removed by python-pptx; blank layout selection handles those.
     """
     to_remove = []
     for shape in slide.shapes:
-        if getattr(shape, "has_text_frame", False):
-            txt = (shape.text_frame.text or "").strip()
-            if ("{{" in txt and "}}" in txt) or txt.upper().startswith("TEMPLATE:"):
-                to_remove.append(shape)
+        try:
+            if getattr(shape, "has_text_frame", False):
+                txt = (shape.text_frame.text or "").strip()
+                if ("{{" in txt and "}}" in txt) or txt.upper().startswith("TEMPLATE:"):
+                    to_remove.append(shape)
+        except Exception:
+            continue
 
-    # remove from XML
     for shape in to_remove:
         try:
-            sp = shape._element  # pylint: disable=protected-access
-            sp.getparent().remove(sp)
+            el = shape._element  # pylint: disable=protected-access
+            el.getparent().remove(el)
         except Exception:
-            # fallback: clear if removal fails
             try:
                 shape.text_frame.clear()
             except Exception:
@@ -115,118 +100,185 @@ def _remove_marker_shapes(slide):
 
 
 # -------------------------------------------------
-# Core Rendering
+# Text + fit helpers
 # -------------------------------------------------
+def _trim_bullets(bullets):
+    out = []
+    for b in bullets or []:
+        s = str(b).strip()
+        if not s:
+            continue
+        if len(s) > MAX_BULLET_CHARS:
+            s = s[: MAX_BULLET_CHARS - 1].rstrip() + "…"
+        out.append(s)
+        if len(out) >= MAX_BULLETS:
+            break
+    return out
 
 
-def _add_title(slide, prs, title: str):
-    box = slide.shapes.add_textbox(
-        Inches(LEFT_MARGIN),
-        Inches(0.7),
-        prs.slide_width - Inches(LEFT_MARGIN + RIGHT_MARGIN),
-        Inches(0.8),
+def _estimate_lines(text: str, chars_per_line: int) -> int:
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text) / max(1, chars_per_line)))
+
+
+def _estimate_bullets_height_in(bullets, font_pt: int, box_w_in: float) -> float:
+    # rough: chars/inch scales inversely with font size
+    chars_per_inch_at_18 = 10
+    chars_per_inch = chars_per_inch_at_18 * (18 / max(8, font_pt))
+    chars_per_line = max(18, int(box_w_in * chars_per_inch))
+
+    total_lines = 0
+    for b in bullets:
+        total_lines += _estimate_lines(b, chars_per_line)
+
+    line_h_in = (font_pt * 1.20) / 72.0
+    return total_lines * line_h_in + 0.20
+
+
+def _fit_font_for_box(
+    bullets, box_w_in, box_h_in, start_pt=FONT_BODY_START_PT, min_pt=FONT_BODY_MIN_PT
+) -> int:
+    size = start_pt
+    while size > min_pt:
+        if _estimate_bullets_height_in(bullets, size, box_w_in) <= box_h_in:
+            return size
+        size -= 1
+    return min_pt
+
+
+# -------------------------------------------------
+# Drawing helpers
+# -------------------------------------------------
+def _add_title(slide, prs: Presentation, title: str):
+    w = prs.slide_width / 914400.0
+    box_w = w - LEFT_MARGIN_IN - RIGHT_MARGIN_IN
+
+    tb = slide.shapes.add_textbox(
+        Inches(TITLE_X_IN), Inches(TITLE_Y_IN), Inches(box_w), Inches(TITLE_H_IN)
     )
-    tf = box.text_frame
+    tf = tb.text_frame
     tf.clear()
+    tf.word_wrap = True
     p = tf.paragraphs[0]
-    p.text = title
-    p.font.size = Pt(28)
+    p.text = title or ""
+    p.font.size = Pt(FONT_TITLE_PT)
     p.font.bold = True
     p.alignment = PP_ALIGN.LEFT
 
 
-def _add_bullets(slide, x, y, w, h, bullets, font_pt):
-    box = slide.shapes.add_textbox(x, y, w, h)
-    tf = box.text_frame
+def _add_bullets(slide, x_in: float, y_in: float, w_in: float, h_in: float, bullets, font_pt: int):
+    tb = slide.shapes.add_textbox(Inches(x_in), Inches(y_in), Inches(w_in), Inches(h_in))
+    tf = tb.text_frame
     tf.clear()
     tf.word_wrap = True
 
     for i, b in enumerate(bullets):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.text = str(b)
+        p.text = b
         p.font.size = Pt(font_pt)
         p.level = 0
 
 
-def _render_standard(slide, prs, title, bullets, diagram=None):
-    _add_title(slide, prs, title)
+def _place_image_contain(
+    slide, image_path: Path, x_in: float, y_in: float, w_in: float, h_in: float
+):
+    """
+    Place image inside a bounding box using contain semantics (no cropping),
+    centered and scaled to fit.
+    """
+    x = Inches(x_in)
+    y = Inches(y_in)
+    w = Inches(w_in)
+    h = Inches(h_in)
 
-    # Defensive cleanup
-    _clear_all_text(slide)
-    _remove_marker_shapes(slide)
-    _add_title(slide, prs, title)
+    pic = slide.shapes.add_picture(str(image_path), x, y)
 
-    approved = bool(diagram and getattr(diagram, "approved", False))
-    image_path = getattr(diagram, "image_path", None) if diagram else None
-    has_diagram = bool(approved and image_path)
+    img_w, img_h = pic.width, pic.height
+    if not img_w or not img_h:
+        return
+
+    scale = min(w / img_w, h / img_h)
+    pic.width = int(img_w * scale)
+    pic.height = int(img_h * scale)
+
+    pic.left = x + int((w - pic.width) / 2)
+    pic.top = y + int((h - pic.height) / 2)
+
+
+# -------------------------------------------------
+# Rendering
+# -------------------------------------------------
+def _render_consulting_slide(slide, prs: Presentation, title: str, bullets, diagram=None):
+    """
+    Consulting standard:
+      - Title band at top
+      - Big diagram in middle (if approved)
+      - Bullets at bottom
+    """
+    _add_title(slide, prs, title)
 
     slide_w_in = prs.slide_width / 914400.0
     slide_h_in = prs.slide_height / 914400.0
+    content_w_in = slide_w_in - LEFT_MARGIN_IN - RIGHT_MARGIN_IN
 
-    content_h = slide_h_in - TOP_Y - BOTTOM_MARGIN
-    content_w = slide_w_in - LEFT_MARGIN - RIGHT_MARGIN
-
-    bullets = [b for b in (bullets or []) if str(b).strip()]
+    # normalize bullets
+    bullets = _trim_bullets(bullets or [])
     if not bullets:
         bullets = [
-            "Define measurable success criteria aligned to the RFP outcomes.",
-            "Specify acceptance evidence (tests, reports, sign-offs) for each requirement theme.",
-            "Confirm governance cadence and decision checkpoints for approval.",
+            "Key objectives and measurable outcomes aligned to the RFP.",
+            "Our approach and assumptions for delivery and governance.",
+            "Acceptance evidence and success criteria.",
         ]
-    if len(bullets) > 8:
-        bullets = bullets[:8] + ["…"]
+
+    # approved diagram?
+    approved = bool(diagram and getattr(diagram, "approved", False))
+    image_path = getattr(diagram, "image_path", None) if diagram else None
+    has_diagram = bool(approved and image_path and str(image_path).strip())
 
     if has_diagram:
-        text_w = content_w * SIDE_BY_SIDE_TEXT_RATIO
-        image_w = content_w - text_w - GAP  # ✅ stays inside slide
+        img = Path(str(image_path))
+        if img.exists():
+            # big middle image
+            _place_image_contain(
+                slide,
+                img,
+                LEFT_MARGIN_IN,
+                DIAGRAM_Y_IN,
+                content_w_in,
+                DIAGRAM_H_IN,
+            )
 
-        font_pt = _fit_font(bullets, text_w, content_h)
-
+        # bottom bullets (short and fitted)
+        font_pt = _fit_font_for_box(bullets, content_w_in, BULLETS_H_IN)
         _add_bullets(
             slide,
-            Inches(LEFT_MARGIN),
-            Inches(TOP_Y),
-            Inches(text_w),
-            Inches(content_h),
+            LEFT_MARGIN_IN,
+            BULLETS_Y_IN,
+            content_w_in,
+            BULLETS_H_IN,
             bullets,
             font_pt,
         )
-
-        img_path = Path(image_path)
-        if img_path.exists():
-            _fit_image(
-                slide,
-                img_path,
-                Inches(LEFT_MARGIN + text_w + GAP),
-                Inches(TOP_Y),
-                Inches(image_w),
-                Inches(content_h),
-            )
         return
 
-    # full-width text layout
-    font_pt = _fit_font(bullets, content_w, content_h)
-    _add_bullets(
-        slide,
-        Inches(LEFT_MARGIN),
-        Inches(TOP_Y),
-        Inches(content_w),
-        Inches(content_h),
-        bullets,
-        font_pt,
-    )
+    # no diagram => make content occupy the main content area (not side-by-side)
+    body_y = CONTENT_TOP_Y_IN
+    body_h = slide_h_in - body_y - BOTTOM_MARGIN_IN
+    font_pt = _fit_font_for_box(bullets, content_w_in, body_h)
+    _add_bullets(slide, LEFT_MARGIN_IN, body_y, content_w_in, body_h, bullets, font_pt)
 
 
 def render_deck_from_template(deck_plan, template_path: Path, out_path: Path) -> Path:
     prs = Presentation(str(template_path))
+    blank = _find_blank_layout(prs)
 
     for slide_spec in deck_plan.slides:
-        slide = prs.slides.add_slide(prs.slide_layouts[-1])
-        _clear_text_placeholders(slide)
+        slide = prs.slides.add_slide(blank)
         _clear_all_text(slide)
         _remove_marker_shapes(slide)
 
-        _render_standard(
+        _render_consulting_slide(
             slide,
             prs,
             slide_spec.title or "",
