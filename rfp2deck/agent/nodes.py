@@ -1,36 +1,35 @@
 from __future__ import annotations
+
 import json
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-from rfp2deck.agent.state import AgentState
-from rfp2deck.core.schemas import (
-    RFPUnderstanding,
-    DeckPlan,
-    TraceabilityReport,
-    ExecutiveNarrative,
-    SlideSpec,
-    DiagramSpec,
-    TraceabilityItem,
-    SectionPlan,
-)
-from rfp2deck.llm.structured import response_as_schema
 from rfp2deck.agent.prompts import (
+    DECK_PLAN_PROMPT,
+    DECK_PLAN_V2_PROMPT,
+    EXEC_NARRATIVE_PROMPT,
     RFP_UNDERSTAND_PROMPT,
     SECTION_PLAN_PROMPT,
-    DECK_PLAN_PROMPT,
-    EXEC_NARRATIVE_PROMPT,
     SLIDE_COMPRESSION_PROMPT,
-    DECK_PLAN_V2_PROMPT,
 )
+from rfp2deck.agent.state import AgentState
+from rfp2deck.core.schemas import (
+    DeckPlan,
+    DiagramSpec,
+    ExecutiveNarrative,
+    RFPUnderstanding,
+    SectionPlan,
+    SlideSpec,
+    TraceabilityItem,
+    TraceabilityReport,
+)
+from rfp2deck.llm.structured import response_as_schema
 from rfp2deck.qa.coverage import build_traceability_report
 
 
 def understand_rfp(state: AgentState) -> AgentState:
     prompt = RFP_UNDERSTAND_PROMPT.format(rfp_text=state.rfp_text[:120000])
-    understanding = response_as_schema(
-        prompt, RFPUnderstanding, reasoning_effort="high"
-    )
+    understanding = response_as_schema(prompt, RFPUnderstanding, reasoning_effort="high")
     state.understanding = understanding
     return state
 
@@ -87,11 +86,7 @@ def _appendix_arch_diagram(
             or getattr(understanding, "customer", None)
             or "Customer"
         )
-        goal = (
-            getattr(understanding, "goal", None)
-            or getattr(understanding, "summary", None)
-            or ""
-        )
+        goal = getattr(understanding, "goal", None) or getattr(understanding, "summary", None) or ""
         if not goal:
             obj = getattr(understanding, "objectives", None)
             if isinstance(obj, list):
@@ -244,9 +239,7 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
         )
 
     # Customer Context (at least 2 slides)
-    cc_slides = [
-        s for s in deck_plan.slides if _norm(s.archetype) == "customer context"
-    ]
+    cc_slides = [s for s in deck_plan.slides if _norm(s.archetype) == "customer context"]
     if len(cc_slides) == 0:
         _add(
             "Customer Context",
@@ -278,9 +271,7 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
         )
 
     # Requirements: ensure an acceptance criteria table slide exists
-    if not any(
-        (_norm(s.archetype) == "requirements" and s.table) for s in deck_plan.slides
-    ):
+    if not any((_norm(s.archetype) == "requirements" and s.table) for s in deck_plan.slides):
         _add(
             "Requirements",
             "Definition of Success — Acceptance Criteria & Evidence",
@@ -401,9 +392,7 @@ def enforce_slide_budget(
         s for s in deck_plan.slides if not (s.slide_id or "").startswith("divider_")
     ]
 
-    if deck_mode and (
-        "Full Proposal" in str(deck_mode) or str(deck_mode).startswith("Full")
-    ):
+    if deck_mode and ("Full Proposal" in str(deck_mode) or str(deck_mode).startswith("Full")):
         core = deck_plan.model_copy(deep=True)
         core.slides = [s for s in deck_plan.slides]
         protected = {"title", "agenda", "team", "commercials", "next steps"}
@@ -449,9 +438,7 @@ def enforce_slide_budget(
                         "Key components, responsibilities, and interfaces.",
                         "Operational/security/governance considerations.",
                     ],
-                    diagram=_appendix_arch_diagram(
-                        view_name, understanding=understanding
-                    ),
+                    diagram=_appendix_arch_diagram(view_name, understanding=understanding),
                 )
             )
 
@@ -471,8 +458,7 @@ def enforce_slide_budget(
             if len(appendix) >= 20:
                 break
             if any(
-                (s.title or "").strip().lower() == (a.title or "").strip().lower()
-                for a in appendix
+                (s.title or "").strip().lower() == (a.title or "").strip().lower() for a in appendix
             ):
                 continue
             s2 = s.model_copy(deep=True) if hasattr(s, "model_copy") else s
@@ -524,9 +510,7 @@ def enforce_slide_budget(
 def build_exec_narrative(state: AgentState) -> AgentState:
     prompt = EXEC_NARRATIVE_PROMPT.format(
         understanding_json=(
-            state.understanding.model_dump_json(indent=2)
-            if state.understanding
-            else "{}"
+            state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
         ),
         retrieved_context=(state.retrieved_context or "")[:12000],
     )
@@ -671,9 +655,7 @@ def plan_deck(state: AgentState) -> AgentState:
         placeholder_map=json.dumps(placeholder_map, ensure_ascii=False)[:6000],
         retrieved_context=(state.retrieved_context or "")[:12000],
         understanding_json=(
-            state.understanding.model_dump_json(indent=2)
-            if state.understanding
-            else "{}"
+            state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
         ),
         narrative_json=narrative_json,
     )
@@ -685,9 +667,7 @@ def plan_deck(state: AgentState) -> AgentState:
     deck_plan = enforce_slide_budget(
         deck_plan, 14, 18, deck_mode=state.deck_mode, understanding=state.understanding
     )
-    deck_plan = ensure_diagrams_for_key_slides(
-        deck_plan, understanding=state.understanding
-    )
+    deck_plan = ensure_diagrams_for_key_slides(deck_plan, understanding=state.understanding)
 
     state.deck_plan = deck_plan
     return state

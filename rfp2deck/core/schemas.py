@@ -1,5 +1,7 @@
 from __future__ import annotations
-from typing import List, Optional, Literal, Dict, Any
+
+from typing import Any, Dict, List, Literal, Optional
+
 from pydantic import BaseModel, Field
 
 Priority = Literal["must", "should", "may"]

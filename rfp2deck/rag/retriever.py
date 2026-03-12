@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Tuple
-import numpy as np
+
 import faiss
+import numpy as np
 
 from rfp2deck.rag.embeddings import embed_texts
 from rfp2deck.rag.indexer import RAGIndex

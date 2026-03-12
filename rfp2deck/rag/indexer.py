@@ -1,10 +1,12 @@
 from __future__ import annotations
+
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
-import numpy as np
+
 import faiss
-import json
+import numpy as np
 
 from rfp2deck.rag.embeddings import embed_texts
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import math
+from pathlib import Path
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -51,9 +51,7 @@ def _estimate_lines(text: str, approx_chars_per_line: int) -> int:
     return max(1, math.ceil(len(text) / max(1, approx_chars_per_line)))
 
 
-def _estimate_bullets_height(
-    bullets: list[str], font_pt: int, box_w_in: float
-) -> float:
+def _estimate_bullets_height(bullets: list[str], font_pt: int, box_w_in: float) -> float:
     chars_per_inch_at_18 = 10
     chars_per_inch = chars_per_inch_at_18 * (18 / max(8, font_pt))
     approx_chars_per_line = int(max(18, box_w_in * chars_per_inch))

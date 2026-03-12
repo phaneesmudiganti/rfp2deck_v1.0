@@ -1,6 +1,8 @@
 from __future__ import annotations
-from pathlib import Path
+
 import base64
+from pathlib import Path
+
 from rfp2deck.llm.openai_client import get_client
 
 

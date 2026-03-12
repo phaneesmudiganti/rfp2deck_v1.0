@@ -1,12 +1,14 @@
 from __future__ import annotations
-from langgraph.graph import StateGraph, END
-from rfp2deck.agent.state import AgentState
+
+from langgraph.graph import END, StateGraph
+
 from rfp2deck.agent.nodes import (
-    understand_rfp,
     derive_sections,
     plan_deck,
     qa_and_report,
+    understand_rfp,
 )
+from rfp2deck.agent.state import AgentState
 
 
 def build_graph():

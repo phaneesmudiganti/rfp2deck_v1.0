@@ -2,53 +2,53 @@ from __future__ import annotations
 
 """Streamlit UI for generating proposal decks from RFP inputs."""
 
-from pathlib import Path
 import os
 import sys
+from pathlib import Path
 
 import streamlit as st
 from streamlit.runtime.secrets import StreamlitSecretNotFoundError
 
 try:
+    from rfp2deck.agent.graph import build_graph
+    from rfp2deck.agent.state import AgentState
     from rfp2deck.core.config import settings
     from rfp2deck.core.logging import setup_logging
     from rfp2deck.core.schemas import DeckPlan, TraceabilityReport
-    from rfp2deck.ingestion.pdf_parser import parse_pdf
-    from rfp2deck.ingestion.docx_parser import parse_docx
+    from rfp2deck.diagrams.generator import generate_diagram_png
     from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
+    from rfp2deck.ingestion.docx_parser import parse_docx
+    from rfp2deck.ingestion.pdf_parser import parse_pdf
     from rfp2deck.rag.indexer import (
-        chunk_text,
         build_faiss_index,
+        chunk_text,
         load_index,
         save_index,
     )
     from rfp2deck.rag.retriever import retrieve
-    from rfp2deck.agent.graph import build_graph
-    from rfp2deck.agent.state import AgentState
     from rfp2deck.rendering.pptx_renderer import render_deck_from_template
-    from rfp2deck.diagrams.generator import generate_diagram_png
 except ModuleNotFoundError:
     # Ensure local package imports work when running via `streamlit run app/streamlit_app.py`.
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from rfp2deck.agent.graph import build_graph
+    from rfp2deck.agent.state import AgentState
     from rfp2deck.core.config import settings
     from rfp2deck.core.logging import setup_logging
     from rfp2deck.core.schemas import DeckPlan, TraceabilityReport
-    from rfp2deck.ingestion.pdf_parser import parse_pdf
-    from rfp2deck.ingestion.docx_parser import parse_docx
+    from rfp2deck.diagrams.generator import generate_diagram_png
     from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
+    from rfp2deck.ingestion.docx_parser import parse_docx
+    from rfp2deck.ingestion.pdf_parser import parse_pdf
     from rfp2deck.rag.indexer import (
-        chunk_text,
         build_faiss_index,
+        chunk_text,
         load_index,
         save_index,
     )
     from rfp2deck.rag.retriever import retrieve
-    from rfp2deck.agent.graph import build_graph
-    from rfp2deck.agent.state import AgentState
     from rfp2deck.rendering.pptx_renderer import render_deck_from_template
-    from rfp2deck.diagrams.generator import generate_diagram_png
 
 
 # Map Streamlit secrets to environment variables (ignore if no secrets.toml present).
@@ -109,9 +109,7 @@ with st.sidebar:
         )
     )
 
-    enable_diagrams = st.checkbox(
-        "Enable diagram generation (guarded + approval)", value=True
-    )
+    enable_diagrams = st.checkbox("Enable diagram generation (guarded + approval)", value=True)
     diagram_model = st.text_input("Diagram model", value="gpt-image-1")
     diagram_size = st.selectbox(
         "Diagram size",
@@ -123,8 +121,7 @@ with st.sidebar:
         "Build/Update RAG index from uploaded reference text (optional)", value=False
     )
     st.caption(
-        "Tip: upload a TXT file of reusable assets/proposal boilerplates "
-        "to build a quick index."
+        "Tip: upload a TXT file of reusable assets/proposal boilerplates " "to build a quick index."
     )
 
     st.divider()
@@ -251,17 +248,12 @@ def wizard_header(step: int):
             st.session_state.wizard_step = 2
             st.rerun()
     with col_c:
-        can_go_3 = (
-            st.session_state.deck_plan is not None
-            and st.session_state.tpl_path is not None
-        )
+        can_go_3 = st.session_state.deck_plan is not None and st.session_state.tpl_path is not None
         if st.button("Go to Step 3", disabled=not can_go_3, use_container_width=True):
             st.session_state.wizard_step = 3
             st.rerun()
     with col_d:
-        st.caption(
-            "Tip: Streamlit reruns on every click — state is preserved in session_state."
-        )
+        st.caption("Tip: Streamlit reruns on every click — state is preserved in session_state.")
 
 
 # Guard: if plan missing, force step 1
@@ -311,16 +303,12 @@ if st.session_state.wizard_step == 1:
         rfp_paths: list[Path] = []
         for rfp_file in rfp_files:
             rfp_paths.append(
-                save_upload(
-                    rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}"
-                )
+                save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
             )
         st.session_state.rfp_paths = [str(p) for p in rfp_paths]
 
         # Use embedded template (copy into data/uploads for reproducibility)
-        tpl_copy = (
-            settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
-        )
+        tpl_copy = settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
         tpl_copy.write_bytes(STANDARD_TEMPLATE.read_bytes())
         st.session_state.tpl_path = str(tpl_copy)
 
@@ -363,9 +351,7 @@ if st.session_state.wizard_step == 1:
         retrieved_context = None
         rag_dir = settings.data_dir / "indexes" / "default_rag"
         if ref_txt and build_index:
-            ref_path = save_upload(
-                ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}"
-            )
+            ref_path = save_upload(ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}")
             ref_text = ref_path.read_text(encoding="utf-8", errors="ignore")
             chunks = chunk_text(ref_text)
             rag = build_faiss_index(chunks)
@@ -375,9 +361,7 @@ if st.session_state.wizard_step == 1:
         if rag_dir.exists() and (rag_dir / "index.faiss").exists():
             rag = load_index(rag_dir)
             top = retrieve(rag, "reusable proposal content for this RFP", k=6)
-            retrieved_context = "\n\n".join(
-                [f"[score={c.score:.3f}]\n{c.text}" for c in top]
-            )
+            retrieved_context = "\n\n".join([f"[score={c.score:.3f}]\n{c.text}" for c in top])
             st.caption("Retrieved reusable context from local RAG index.")
 
         st.session_state.retrieved_context = retrieved_context
@@ -433,9 +417,7 @@ if st.session_state.wizard_step == 2:
     if plan:
         with st.expander("Diagram Coverage (diagnostics)"):
             total = len(plan.slides)
-            with_prompt = sum(
-                1 for s in plan.slides if getattr(s, "diagram", None) is not None
-            )
+            with_prompt = sum(1 for s in plan.slides if getattr(s, "diagram", None) is not None)
             st.write(f"Slides: {total} | With diagram prompts: {with_prompt}")
             missing = [
                 f"{s.slide_id}: {s.title} ({s.archetype})"
@@ -444,9 +426,7 @@ if st.session_state.wizard_step == 2:
                 and (str(s.archetype).lower() in ["architecture", "team"])
             ]
             if missing:
-                st.warning(
-                    "Missing DiagramSpec on key slides (should be fixed in v4.5.5):"
-                )
+                st.warning("Missing DiagramSpec on key slides (should be fixed in v4.5.5):")
                 st.code("\n".join(missing))
             else:
                 st.success("All key slides have diagram prompts.")
@@ -478,9 +458,7 @@ if st.session_state.wizard_step == 2:
             "Generate / Regenerate Diagrams", type="primary", use_container_width=True
         )
     with colR:
-        st.caption(
-            "You can regenerate after changing diagram model/size in the sidebar."
-        )
+        st.caption("You can regenerate after changing diagram model/size in the sidebar.")
 
     if gen_clicked:
         diagrams_dir = settings.data_dir / "outputs" / "diagrams"
@@ -507,9 +485,7 @@ if st.session_state.wizard_step == 2:
 
     any_images = any((s.diagram and s.diagram.image_path) for s in plan.slides)
     if not any_images:
-        st.info(
-            "No diagram images generated yet. Click **Generate / Regenerate Diagrams** above."
-        )
+        st.info("No diagram images generated yet. Click **Generate / Regenerate Diagrams** above.")
         st.stop()
 
     st.markdown("### Diagram Review & Approval")

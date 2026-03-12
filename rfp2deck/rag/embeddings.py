@@ -1,8 +1,11 @@
 from __future__ import annotations
+
 from typing import List
+
 import numpy as np
-from rfp2deck.llm.openai_client import get_client
+
 from rfp2deck.core.config import settings
+from rfp2deck.llm.openai_client import get_client
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:

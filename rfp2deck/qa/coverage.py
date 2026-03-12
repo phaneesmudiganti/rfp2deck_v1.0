@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Dict, List
+
 from rfp2deck.core.schemas import (
-    RFPUnderstanding,
     DeckPlan,
-    TraceabilityReport,
+    RFPUnderstanding,
     TraceabilityItem,
+    TraceabilityReport,
 )
 
 
@@ -23,9 +25,7 @@ def build_traceability_report(
     for r in understanding.requirements:
         slides = slide_refs.get(r.id, [])
         coverage.append(
-            TraceabilityItem(
-                requirement_id=r.id, requirement_text=r.text, covered_on_slides=slides
-            )
+            TraceabilityItem(requirement_id=r.id, requirement_text=r.text, covered_on_slides=slides)
         )
         if r.priority == "must" and not slides:
             uncovered.append(r.id)
