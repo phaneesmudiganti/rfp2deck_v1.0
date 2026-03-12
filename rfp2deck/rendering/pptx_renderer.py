@@ -9,7 +9,6 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
-
 # -------------------------------------------------
 # Geometry + Layout Constants (Consistent)
 # -------------------------------------------------
@@ -18,8 +17,8 @@ LEFT_MARGIN = 0.75
 RIGHT_MARGIN = 0.75
 TOP_Y = 1.55
 BOTTOM_MARGIN = 0.55
-SIDE_BY_SIDE_TEXT_RATIO = 0.45  # smaller text region
-SIDE_BY_SIDE_IMAGE_RATIO = 0.55  # larger image region
+SIDE_BY_SIDE_TEXT_RATIO = 0.38  # smaller text region
+SIDE_BY_SIDE_IMAGE_RATIO = 0.62  # larger image region
 GAP = 0.25
 
 
@@ -27,10 +26,20 @@ GAP = 0.25
 # Helpers
 # -------------------------------------------------
 
+
 def _clear_text_placeholders(slide):
     for shape in slide.shapes:
         try:
             if getattr(shape, "is_placeholder", False) and shape.has_text_frame:
+                shape.text_frame.clear()
+        except Exception:
+            continue
+
+
+def _clear_all_text(slide):
+    for shape in slide.shapes:
+        try:
+            if getattr(shape, "has_text_frame", False):
                 shape.text_frame.clear()
         except Exception:
             continue
@@ -42,7 +51,9 @@ def _estimate_lines(text: str, approx_chars_per_line: int) -> int:
     return max(1, math.ceil(len(text) / max(1, approx_chars_per_line)))
 
 
-def _estimate_bullets_height(bullets: list[str], font_pt: int, box_w_in: float) -> float:
+def _estimate_bullets_height(
+    bullets: list[str], font_pt: int, box_w_in: float
+) -> float:
     chars_per_inch_at_18 = 10
     chars_per_inch = chars_per_inch_at_18 * (18 / max(8, font_pt))
     approx_chars_per_line = int(max(18, box_w_in * chars_per_inch))
@@ -80,9 +91,35 @@ def _fit_image(slide, image_path: Path, x, y, w, h):
     return pic
 
 
+def _remove_marker_shapes(slide):
+    """
+    Remove any template marker text boxes like {{TITLE}}, {{BODY}}, etc.
+    These sometimes remain visible in edit mode.
+    """
+    to_remove = []
+    for shape in slide.shapes:
+        if getattr(shape, "has_text_frame", False):
+            txt = (shape.text_frame.text or "").strip()
+            if ("{{" in txt and "}}" in txt) or txt.upper().startswith("TEMPLATE:"):
+                to_remove.append(shape)
+
+    # remove from XML
+    for shape in to_remove:
+        try:
+            sp = shape._element  # pylint: disable=protected-access
+            sp.getparent().remove(sp)
+        except Exception:
+            # fallback: clear if removal fails
+            try:
+                shape.text_frame.clear()
+            except Exception:
+                pass
+
+
 # -------------------------------------------------
 # Core Rendering
 # -------------------------------------------------
+
 
 def _add_title(slide, prs, title: str):
     box = slide.shapes.add_textbox(
@@ -116,6 +153,11 @@ def _add_bullets(slide, x, y, w, h, bullets, font_pt):
 def _render_standard(slide, prs, title, bullets, diagram=None):
     _add_title(slide, prs, title)
 
+    # Defensive cleanup
+    _clear_all_text(slide)
+    _remove_marker_shapes(slide)
+    _add_title(slide, prs, title)
+
     approved = bool(diagram and getattr(diagram, "approved", False))
     image_path = getattr(diagram, "image_path", None) if diagram else None
     has_diagram = bool(approved and image_path)
@@ -124,18 +166,21 @@ def _render_standard(slide, prs, title, bullets, diagram=None):
     slide_h_in = prs.slide_height / 914400.0
 
     content_h = slide_h_in - TOP_Y - BOTTOM_MARGIN
+    content_w = slide_w_in - LEFT_MARGIN - RIGHT_MARGIN
 
-    bullets = [b for b in bullets if str(b).strip()]
+    bullets = [b for b in (bullets or []) if str(b).strip()]
+    if not bullets:
+        bullets = [
+            "Define measurable success criteria aligned to the RFP outcomes.",
+            "Specify acceptance evidence (tests, reports, sign-offs) for each requirement theme.",
+            "Confirm governance cadence and decision checkpoints for approval.",
+        ]
     if len(bullets) > 8:
         bullets = bullets[:8] + ["…"]
 
-    # ---------------------------------
-    # Side-by-side layout (consistent)
-    # ---------------------------------
-
     if has_diagram:
-        text_w = slide_w_in * SIDE_BY_SIDE_TEXT_RATIO
-        image_w = slide_w_in * SIDE_BY_SIDE_IMAGE_RATIO - GAP
+        text_w = content_w * SIDE_BY_SIDE_TEXT_RATIO
+        image_w = content_w - text_w - GAP  # ✅ stays inside slide
 
         font_pt = _fit_font(bullets, text_w, content_h)
 
@@ -161,18 +206,13 @@ def _render_standard(slide, prs, title, bullets, diagram=None):
             )
         return
 
-    # ---------------------------------
-    # Full-width text layout
-    # ---------------------------------
-
-    text_w = slide_w_in - (LEFT_MARGIN + RIGHT_MARGIN)
-    font_pt = _fit_font(bullets, text_w, content_h)
-
+    # full-width text layout
+    font_pt = _fit_font(bullets, content_w, content_h)
     _add_bullets(
         slide,
         Inches(LEFT_MARGIN),
         Inches(TOP_Y),
-        Inches(text_w),
+        Inches(content_w),
         Inches(content_h),
         bullets,
         font_pt,
@@ -185,6 +225,8 @@ def render_deck_from_template(deck_plan, template_path: Path, out_path: Path) ->
     for slide_spec in deck_plan.slides:
         slide = prs.slides.add_slide(prs.slide_layouts[-1])
         _clear_text_placeholders(slide)
+        _clear_all_text(slide)
+        _remove_marker_shapes(slide)
 
         _render_standard(
             slide,

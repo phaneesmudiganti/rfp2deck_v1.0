@@ -7,10 +7,12 @@ import faiss
 from rfp2deck.rag.embeddings import embed_texts
 from rfp2deck.rag.indexer import RAGIndex
 
+
 @dataclass
 class RetrievedChunk:
     score: float
     text: str
+
 
 def retrieve(rag: RAGIndex, query: str, k: int = 6) -> List[RetrievedChunk]:
     qv = embed_texts([query])

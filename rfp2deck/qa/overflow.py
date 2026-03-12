@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 EMU_PER_INCH = 914400
 
+
 @dataclass
 class OverflowResult:
     fits: bool
@@ -11,10 +12,14 @@ class OverflowResult:
     max_lines: int
     max_chars_per_line: int
 
+
 def _emu_to_inches(emu: int) -> float:
     return emu / EMU_PER_INCH
 
-def estimate_fit(box_width_emu: int, box_height_emu: int, text: str, font_pt: int) -> OverflowResult:
+
+def estimate_fit(
+    box_width_emu: int, box_height_emu: int, text: str, font_pt: int
+) -> OverflowResult:
     """Heuristic overflow estimator (no PowerPoint rendering engine available)."""
     width_in = _emu_to_inches(int(box_width_emu))
     height_in = _emu_to_inches(int(box_height_emu))
@@ -34,9 +39,22 @@ def estimate_fit(box_width_emu: int, box_height_emu: int, text: str, font_pt: in
         est_lines += max(1, (len(p) + max_chars_per_line - 1) // max_chars_per_line)
 
     fits = est_lines <= max_lines
-    return OverflowResult(fits=fits, font_pt=font_pt, est_lines=est_lines, max_lines=max_lines, max_chars_per_line=max_chars_per_line)
+    return OverflowResult(
+        fits=fits,
+        font_pt=font_pt,
+        est_lines=est_lines,
+        max_lines=max_lines,
+        max_chars_per_line=max_chars_per_line,
+    )
 
-def find_fitting_font(box_width_emu: int, box_height_emu: int, text: str, start_font_pt: int = 18, min_font_pt: int = 10) -> OverflowResult:
+
+def find_fitting_font(
+    box_width_emu: int,
+    box_height_emu: int,
+    text: str,
+    start_font_pt: int = 18,
+    min_font_pt: int = 10,
+) -> OverflowResult:
     font = start_font_pt
     last = estimate_fit(box_width_emu, box_height_emu, text, font)
     if last.fits:

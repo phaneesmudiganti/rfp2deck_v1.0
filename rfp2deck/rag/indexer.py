@@ -8,10 +8,12 @@ import json
 
 from rfp2deck.rag.embeddings import embed_texts
 
+
 @dataclass
 class RAGIndex:
     index: faiss.IndexFlatIP
     chunks: List[str]
+
 
 def chunk_text(text: str, max_chars: int = 1800, overlap: int = 200) -> List[str]:
     chunks = []
@@ -26,6 +28,7 @@ def chunk_text(text: str, max_chars: int = 1800, overlap: int = 200) -> List[str
             break
     return [c.strip() for c in chunks if c.strip()]
 
+
 def build_faiss_index(texts: List[str]) -> RAGIndex:
     vecs = embed_texts(texts)
     faiss.normalize_L2(vecs)
@@ -34,13 +37,18 @@ def build_faiss_index(texts: List[str]) -> RAGIndex:
     idx.add(vecs)
     return RAGIndex(index=idx, chunks=texts)
 
+
 def save_index(rag: RAGIndex, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     faiss.write_index(rag.index, str(out_dir / "index.faiss"))
-    (out_dir / "chunks.json").write_text(json.dumps(rag.chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "chunks.json").write_text(
+        json.dumps(rag.chunks, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
 
 def load_index(in_dir: Path) -> RAGIndex:
     import faiss
+
     idx = faiss.read_index(str(in_dir / "index.faiss"))
     chunks = json.loads((in_dir / "chunks.json").read_text(encoding="utf-8"))
     return RAGIndex(index=idx, chunks=chunks)

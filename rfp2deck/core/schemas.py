@@ -4,11 +4,13 @@ from pydantic import BaseModel, Field
 
 Priority = Literal["must", "should", "may"]
 
+
 class Requirement(BaseModel):
     id: str
     text: str
     priority: Priority = "should"
     source_ref: Optional[str] = None  # e.g., "RFP p12, §3.2"
+
 
 class RFPUnderstanding(BaseModel):
     customer_name: Optional[str] = None
@@ -18,6 +20,7 @@ class RFPUnderstanding(BaseModel):
     requirements: List[Requirement] = Field(default_factory=list)
     assumptions: List[str] = Field(default_factory=list)
     risks: List[str] = Field(default_factory=list)
+
 
 SlideArchetype = Literal[
     "Title",
@@ -54,6 +57,7 @@ SectionType = Literal[
     "other",
 ]
 
+
 class SectionSpec(BaseModel):
     section_title: str
     section_type: SectionType = "other"
@@ -61,9 +65,11 @@ class SectionSpec(BaseModel):
     slide_titles: List[str] = Field(default_factory=list)
     priority: Priority = "should"
 
+
 class SectionPlan(BaseModel):
     slide_count_target: int = 16
     sections: List[SectionSpec] = Field(default_factory=list)
+
 
 class ExecutiveNarrative(BaseModel):
     value_proposition: str
@@ -73,11 +79,13 @@ class ExecutiveNarrative(BaseModel):
     mandatory_sections: List[str] = Field(default_factory=list)
     milestone_mapping: dict = Field(default_factory=dict)
 
+
 class DiagramSpec(BaseModel):
     kind: Literal["architecture", "timeline", "process", "org", "generic"] = "generic"
     prompt: str
     approved: bool = False  # UI gate; renderer inserts image only if approved
     image_path: Optional[str] = None  # filled by diagram generator
+
 
 class SlideSpec(BaseModel):
     slide_id: str
@@ -93,14 +101,17 @@ class SlideSpec(BaseModel):
     diagram: Optional[DiagramSpec] = None  # optional diagram generation + insertion
     preferred_font_pt: Optional[int] = 18  # renderer may shrink to fit
 
+
 class DeckPlan(BaseModel):
     deck_title: str
     slides: List[SlideSpec]
+
 
 class TraceabilityItem(BaseModel):
     requirement_id: str
     requirement_text: str
     covered_on_slides: List[str] = Field(default_factory=list)
+
 
 class TraceabilityReport(BaseModel):
     deck_title: str

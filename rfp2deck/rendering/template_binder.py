@@ -3,12 +3,14 @@ from dataclasses import dataclass
 from typing import Dict, Optional, List
 from pptx import Presentation
 
+
 @dataclass
 class BoundLayout:
     name: str
     title_ph_idx: Optional[int]
     body_ph_idx: Optional[int]
     picture_ph_idx: Optional[int]
+
 
 class TemplateBinder:
     """Bind slide archetypes to real template layouts and placeholders."""
@@ -48,7 +50,18 @@ class TemplateBinder:
         a = (archetype or "").lower()
         if a == "title":
             wanted = ["title slide", "title"]
-        elif a in ("agenda","requirements","customer context","solution overview","delivery plan","risks","case studies","next steps","content","commercials"):
+        elif a in (
+            "agenda",
+            "requirements",
+            "customer context",
+            "solution overview",
+            "delivery plan",
+            "risks",
+            "case studies",
+            "next steps",
+            "content",
+            "commercials",
+        ):
             wanted = ["title and content", "title & content", "content", "section"]
         elif a == "team":
             wanted = ["two content", "comparison", "title and content", "content"]

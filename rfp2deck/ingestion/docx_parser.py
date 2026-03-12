@@ -3,10 +3,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from docx import Document
 
+
 @dataclass
 class ParsedDoc:
     text: str
     paragraph_count: int
+
 
 def parse_docx(path: Path) -> ParsedDoc:
     d = Document(path)

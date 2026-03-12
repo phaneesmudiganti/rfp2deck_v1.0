@@ -4,17 +4,36 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from rfp2deck.agent.state import AgentState
-from rfp2deck.core.schemas import RFPUnderstanding, DeckPlan, TraceabilityReport, ExecutiveNarrative, SlideSpec, DiagramSpec, TraceabilityItem, SectionPlan
+from rfp2deck.core.schemas import (
+    RFPUnderstanding,
+    DeckPlan,
+    TraceabilityReport,
+    ExecutiveNarrative,
+    SlideSpec,
+    DiagramSpec,
+    TraceabilityItem,
+    SectionPlan,
+)
 from rfp2deck.llm.structured import response_as_schema
-from rfp2deck.agent.prompts import RFP_UNDERSTAND_PROMPT, SECTION_PLAN_PROMPT, DECK_PLAN_PROMPT, EXEC_NARRATIVE_PROMPT, \
-    SLIDE_COMPRESSION_PROMPT, DECK_PLAN_V2_PROMPT
+from rfp2deck.agent.prompts import (
+    RFP_UNDERSTAND_PROMPT,
+    SECTION_PLAN_PROMPT,
+    DECK_PLAN_PROMPT,
+    EXEC_NARRATIVE_PROMPT,
+    SLIDE_COMPRESSION_PROMPT,
+    DECK_PLAN_V2_PROMPT,
+)
 from rfp2deck.qa.coverage import build_traceability_report
+
 
 def understand_rfp(state: AgentState) -> AgentState:
     prompt = RFP_UNDERSTAND_PROMPT.format(rfp_text=state.rfp_text[:120000])
-    understanding = response_as_schema(prompt, RFPUnderstanding, reasoning_effort="high")
+    understanding = response_as_schema(
+        prompt, RFPUnderstanding, reasoning_effort="high"
+    )
     state.understanding = understanding
     return state
+
 
 # -----------------------------
 # v3: quality enforcement helpers
@@ -33,7 +52,6 @@ REQUIRED_ARCHETYPES = [
     ("Commercials", "Commercials"),
     ("Next Steps", "Next Steps"),
 ]
-
 
 
 def _diagram_prompt(kind: str) -> str:
@@ -58,12 +76,22 @@ def _diagram_prompt(kind: str) -> str:
     return "Create a clean corporate diagram. White background. No logos."
 
 
-def _appendix_arch_diagram(view_name: str, understanding: RFPUnderstanding | None = None) -> DiagramSpec:
+def _appendix_arch_diagram(
+    view_name: str, understanding: RFPUnderstanding | None = None
+) -> DiagramSpec:
     """Create a professional enterprise-style diagram prompt for appendix architecture views."""
     context = ""
     if understanding:
-        cust = getattr(understanding, "customer_name", None) or getattr(understanding, "customer", None) or "Customer"
-        goal = getattr(understanding, "goal", None) or getattr(understanding, "summary", None) or ""
+        cust = (
+            getattr(understanding, "customer_name", None)
+            or getattr(understanding, "customer", None)
+            or "Customer"
+        )
+        goal = (
+            getattr(understanding, "goal", None)
+            or getattr(understanding, "summary", None)
+            or ""
+        )
         if not goal:
             obj = getattr(understanding, "objectives", None)
             if isinstance(obj, list):
@@ -83,11 +111,18 @@ def _appendix_arch_diagram(view_name: str, understanding: RFPUnderstanding | Non
         approved=False,
     )
 
-def ensure_diagrams_for_key_slides(deck_plan: DeckPlan, understanding: RFPUnderstanding | None = None) -> DeckPlan:
+
+def ensure_diagrams_for_key_slides(
+    deck_plan: DeckPlan, understanding: RFPUnderstanding | None = None
+) -> DeckPlan:
     """Guarantee that key slides carry DiagramSpec prompts so Step-2 can generate previews.
     Guarded approval remains required (approved defaults to False)."""
 
-    cust = getattr(understanding, "customer_name", None) or getattr(understanding, "customer", None) or "Customer"
+    cust = (
+        getattr(understanding, "customer_name", None)
+        or getattr(understanding, "customer", None)
+        or "Customer"
+    )
     summary = (
         getattr(understanding, "summary", None)
         or getattr(understanding, "problem_statement", None)
@@ -127,9 +162,12 @@ def ensure_diagrams_for_key_slides(deck_plan: DeckPlan, understanding: RFPUnders
             )
 
     return deck_plan
+
+
 def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
     """Ensure a professional bid-defense skeleton exists using allowed archetypes.
-    Adds missing universally-required sections and creates a table-based acceptance criteria slide."""
+    Adds missing universally-required sections and creates a table-based acceptance criteria slide.
+    """
 
     def _norm(s: str) -> str:
         return (s or "").strip().lower()
@@ -141,8 +179,18 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
         sub = _norm(substr)
         return any(sub in _norm(s.title) for s in deck_plan.slides)
 
-    def _add(archetype: str, title: str, bullets: List[str] | None = None, *, table: dict | None = None, notes: str | None = None, diagram: DiagramSpec | None = None):
-        slide_id = "auto_" + _norm(title).replace("—", "-").replace("→", "-").replace("(", "").replace(")", "").replace(" ", "_")
+    def _add(
+        archetype: str,
+        title: str,
+        bullets: List[str] | None = None,
+        *,
+        table: dict | None = None,
+        notes: str | None = None,
+        diagram: DiagramSpec | None = None,
+    ):
+        slide_id = "auto_" + _norm(title).replace("—", "-").replace("→", "-").replace(
+            "(", ""
+        ).replace(")", "").replace(" ", "_")
         deck_plan.slides.append(
             SlideSpec(
                 slide_id=slide_id,
@@ -157,7 +205,11 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
 
     # Title should exist
     if not _has_archetype("Title"):
-        _add("Title", "Proposal — Bid Defense", ["Prepared for: Customer", "Prepared by: HCL", "Date:"])
+        _add(
+            "Title",
+            "Proposal — Bid Defense",
+            ["Prepared for: Customer", "Prepared by: HCL", "Date:"],
+        )
 
     # Agenda (must be early)
     if not _has_archetype("Agenda"):
@@ -192,38 +244,79 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
         )
 
     # Customer Context (at least 2 slides)
-    cc_slides = [s for s in deck_plan.slides if _norm(s.archetype) == "customer context"]
+    cc_slides = [
+        s for s in deck_plan.slides if _norm(s.archetype) == "customer context"
+    ]
     if len(cc_slides) == 0:
-        _add("Customer Context", "Pearson Objectives & Decision Drivers", [
-            "What success looks like for SIE and Learner Data Profile initiatives.",
-            "Key stakeholders, constraints, and decision criteria for approval.",
-            "Operating assumptions and scope boundaries from the RFP.",
-        ])
-        _add("Customer Context", "Current Landscape & Constraints", [
-            "Systems, data sources, and integration touchpoints impacting the LDP.",
-            "Security, privacy, governance, and regulatory constraints.",
-            "Risks/complexities to control early via contract-first approach.",
-        ])
+        _add(
+            "Customer Context",
+            "Pearson Objectives & Decision Drivers",
+            [
+                "What success looks like for SIE and Learner Data Profile initiatives.",
+                "Key stakeholders, constraints, and decision criteria for approval.",
+                "Operating assumptions and scope boundaries from the RFP.",
+            ],
+        )
+        _add(
+            "Customer Context",
+            "Current Landscape & Constraints",
+            [
+                "Systems, data sources, and integration touchpoints impacting the LDP.",
+                "Security, privacy, governance, and regulatory constraints.",
+                "Risks/complexities to control early via contract-first approach.",
+            ],
+        )
     elif len(cc_slides) == 1:
-        _add("Customer Context", "Current Landscape & Constraints", [
-            "Systems, data sources, and integration touchpoints impacting the LDP.",
-            "Security, privacy, governance, and regulatory constraints.",
-            "Risks/complexities to control early via contract-first approach.",
-        ])
+        _add(
+            "Customer Context",
+            "Current Landscape & Constraints",
+            [
+                "Systems, data sources, and integration touchpoints impacting the LDP.",
+                "Security, privacy, governance, and regulatory constraints.",
+                "Risks/complexities to control early via contract-first approach.",
+            ],
+        )
 
     # Requirements: ensure an acceptance criteria table slide exists
-    if not any((_norm(s.archetype) == "requirements" and s.table) for s in deck_plan.slides):
+    if not any(
+        (_norm(s.archetype) == "requirements" and s.table) for s in deck_plan.slides
+    ):
         _add(
             "Requirements",
             "Definition of Success — Acceptance Criteria & Evidence",
             bullets=[],
             table={
-                "headers": ["Acceptance Criterion", "Evidence / Artifact", "Approver", "When"],
+                "headers": [
+                    "Acceptance Criterion",
+                    "Evidence / Artifact",
+                    "Approver",
+                    "When",
+                ],
                 "rows": [
-                    ["Canonical LDP defined", "Data model + glossary + conventions", "Pearson SIE leads", "M1/M2"],
-                    ["Contracts versioned", "Schema registry + version policy", "Architecture board", "M2"],
-                    ["Security & privacy by design", "Threat model + controls mapping", "Security", "M2/M3"],
-                    ["Implementation-ready outputs", "HLD/LLD + reference patterns", "Delivery owners", "M3+ "],
+                    [
+                        "Canonical LDP defined",
+                        "Data model + glossary + conventions",
+                        "Pearson SIE leads",
+                        "M1/M2",
+                    ],
+                    [
+                        "Contracts versioned",
+                        "Schema registry + version policy",
+                        "Architecture board",
+                        "M2",
+                    ],
+                    [
+                        "Security & privacy by design",
+                        "Threat model + controls mapping",
+                        "Security",
+                        "M2/M3",
+                    ],
+                    [
+                        "Implementation-ready outputs",
+                        "HLD/LLD + reference patterns",
+                        "Delivery owners",
+                        "M3+ ",
+                    ],
                 ],
             },
             notes="Use this as the bid-defense success rubric; keep it crisp.",
@@ -231,21 +324,64 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
 
     # Ensure always-present sections
     if not _has_archetype("Architecture"):
-        _add("Architecture", "Reference Architecture Overview", ["End-to-end view of contract-first canonical model and integrations."], diagram=_diagram_prompt("architecture", "End-to-end contract-first learner data profile reference architecture."))
+        _add(
+            "Architecture",
+            "Reference Architecture Overview",
+            ["End-to-end view of contract-first canonical model and integrations."],
+            diagram=_diagram_prompt(
+                "architecture",
+                "End-to-end contract-first learner data profile reference architecture.",
+            ),
+        )
     if not _has_archetype("Delivery Plan"):
-        _add("Delivery Plan", "Delivery Plan & Governance", ["Phased delivery with milestone reviews, sign-offs, and change control."])
+        _add(
+            "Delivery Plan",
+            "Delivery Plan & Governance",
+            ["Phased delivery with milestone reviews, sign-offs, and change control."],
+        )
     if not _has_archetype("Timeline"):
-        _add("Timeline", "Timeline & Milestones", ["High-level timeline for M1–M6 with review gates and decision points."])
+        _add(
+            "Timeline",
+            "Timeline & Milestones",
+            ["High-level timeline for M1–M6 with review gates and decision points."],
+        )
     if not _has_archetype("Risks"):
-        _add("Risks", "Risks & Mitigations", ["Key risks, mitigations, and governance controls."])
+        _add(
+            "Risks",
+            "Risks & Mitigations",
+            ["Key risks, mitigations, and governance controls."],
+        )
     if not _has_archetype("Team"):
-        _add("Team", "Delivery Team", ["Program leadership, architecture, data governance, and security roles."])
+        _add(
+            "Team",
+            "Delivery Team",
+            ["Program leadership, architecture, data governance, and security roles."],
+        )
     if not _has_archetype("Commercials"):
-        _add("Commercials", "Commercials", ["Option A: Milestone-based fixed price", "Option B: T&M with capped milestones", "Option C: Outcome-based hybrid", "Assumptions: access, SMEs, environments, and approvals."])
+        _add(
+            "Commercials",
+            "Commercials",
+            [
+                "Option A: Milestone-based fixed price",
+                "Option B: T&M with capped milestones",
+                "Option C: Outcome-based hybrid",
+                "Assumptions: access, SMEs, environments, and approvals.",
+            ],
+        )
     if not _has_archetype("Next Steps"):
-        _add("Next Steps", "Next Steps", ["Confirm scope + milestones", "Agree governance + sign-off cadence", "Kickoff and mobilize team"])
+        _add(
+            "Next Steps",
+            "Next Steps",
+            [
+                "Confirm scope + milestones",
+                "Agree governance + sign-off cadence",
+                "Kickoff and mobilize team",
+            ],
+        )
 
     return deck_plan
+
+
 def enforce_slide_budget(
     deck_plan: DeckPlan,
     min_slides: int = 14,
@@ -261,9 +397,13 @@ def enforce_slide_budget(
     def key(s: SlideSpec) -> str:
         return (s.archetype or "").strip().lower()
 
-    deck_plan.slides = [s for s in deck_plan.slides if not (s.slide_id or "").startswith("divider_")]
+    deck_plan.slides = [
+        s for s in deck_plan.slides if not (s.slide_id or "").startswith("divider_")
+    ]
 
-    if deck_mode and ("Full Proposal" in str(deck_mode) or str(deck_mode).startswith("Full")):
+    if deck_mode and (
+        "Full Proposal" in str(deck_mode) or str(deck_mode).startswith("Full")
+    ):
         core = deck_plan.model_copy(deep=True)
         core.slides = [s for s in deck_plan.slides]
         protected = {"title", "agenda", "team", "commercials", "next steps"}
@@ -309,19 +449,31 @@ def enforce_slide_budget(
                         "Key components, responsibilities, and interfaces.",
                         "Operational/security/governance considerations.",
                     ],
-                    diagram=_appendix_arch_diagram(view_name, understanding=understanding),
+                    diagram=_appendix_arch_diagram(
+                        view_name, understanding=understanding
+                    ),
                 )
             )
 
         core_ids = {s.slide_id for s in core.slides}
         extras = [s for s in deck_plan.slides if s.slide_id not in core_ids]
-        prio = {"architecture": 0, "requirements": 1, "delivery plan": 2, "timeline": 3, "customer context": 4, "content": 5}
+        prio = {
+            "architecture": 0,
+            "requirements": 1,
+            "delivery plan": 2,
+            "timeline": 3,
+            "customer context": 4,
+            "content": 5,
+        }
         extras.sort(key=lambda s: prio.get(key(s), 99))
 
         for s in extras:
             if len(appendix) >= 20:
                 break
-            if any((s.title or "").strip().lower() == (a.title or "").strip().lower() for a in appendix):
+            if any(
+                (s.title or "").strip().lower() == (a.title or "").strip().lower()
+                for a in appendix
+            ):
                 continue
             s2 = s.model_copy(deep=True) if hasattr(s, "model_copy") else s
             s2.slide_id = "appendix_" + (s2.slide_id or "extra")
@@ -368,19 +520,27 @@ def enforce_slide_budget(
 
     return deck_plan
 
+
 def build_exec_narrative(state: AgentState) -> AgentState:
     prompt = EXEC_NARRATIVE_PROMPT.format(
-        understanding_json=state.understanding.model_dump_json(indent=2) if state.understanding else "{}",
+        understanding_json=(
+            state.understanding.model_dump_json(indent=2)
+            if state.understanding
+            else "{}"
+        ),
         retrieved_context=(state.retrieved_context or "")[:12000],
     )
     narrative = response_as_schema(prompt, ExecutiveNarrative, reasoning_effort="high")
     state.narrative = narrative  # type: ignore[attr-defined]
     return state
 
+
 def compress_deck_plan(state: AgentState) -> AgentState:
     if not state.deck_plan:
         return state
-    prompt = SLIDE_COMPRESSION_PROMPT.format(deck_plan_json=state.deck_plan.model_dump_json(indent=2))
+    prompt = SLIDE_COMPRESSION_PROMPT.format(
+        deck_plan_json=state.deck_plan.model_dump_json(indent=2)
+    )
     compressed = response_as_schema(prompt, DeckPlan, reasoning_effort="high")
 
     old_by_id = {s.slide_id: s for s in state.deck_plan.slides}
@@ -396,7 +556,9 @@ def compress_deck_plan(state: AgentState) -> AgentState:
 
 def derive_sections(state: AgentState) -> AgentState:
     """Derive an RFP-specific section taxonomy (within 14–18 slides), including Team and Commercials."""
-    understanding_json = state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
+    understanding_json = (
+        state.understanding.model_dump_json(indent=2) if state.understanding else "{}"
+    )
     prompt = SECTION_PLAN_PROMPT.format(
         understanding_json=understanding_json,
         retrieved_context=(state.retrieved_context or "")[:12000],
@@ -411,12 +573,13 @@ def derive_sections(state: AgentState) -> AgentState:
     state.section_plan = section_plan
     return state
 
+
 def order_deck(deck_plan: DeckPlan) -> DeckPlan:
     """Order slides into a professional narrative. Keeps relative order within the same archetype."""
     order = [
         "Title",
         "Agenda",
-        "Solution Overview",   # includes Executive Summary
+        "Solution Overview",  # includes Executive Summary
         "Customer Context",
         "Requirements",
         "Architecture",
@@ -431,14 +594,17 @@ def order_deck(deck_plan: DeckPlan) -> DeckPlan:
     ]
     rank = {a.lower(): i for i, a in enumerate(order)}
     indexed = list(enumerate(deck_plan.slides))
-    indexed.sort(key=lambda ix: (rank.get((ix[1].archetype or '').lower(), 999), ix[0]))
+    indexed.sort(key=lambda ix: (rank.get((ix[1].archetype or "").lower(), 999), ix[0]))
     deck_plan.slides = [s for _, s in indexed]
     return deck_plan
 
+
 import re
+
 
 def _strip_milestone_prefix(title: str) -> str:
     return re.sub(r"^M\d+\s*[—:-]\s*", "", title or "")
+
 
 def _tighten_title(title: str, max_words: int = 10) -> str:
     t = (title or "").strip()
@@ -485,7 +651,6 @@ def polish_deck_text(deck_plan: DeckPlan) -> DeckPlan:
     return deck_plan
 
 
-
 def insert_section_dividers(deck_plan: DeckPlan) -> DeckPlan:
     """v4.4: Section dividers are disabled by default to stay within 14–18 slide bid-defense budget.
     (Section framing is handled via strong titles + first slide in each section.)"""
@@ -505,7 +670,11 @@ def plan_deck(state: AgentState) -> AgentState:
         layout_names=json.dumps(layout_names, ensure_ascii=False),
         placeholder_map=json.dumps(placeholder_map, ensure_ascii=False)[:6000],
         retrieved_context=(state.retrieved_context or "")[:12000],
-        understanding_json=state.understanding.model_dump_json(indent=2) if state.understanding else "{}",
+        understanding_json=(
+            state.understanding.model_dump_json(indent=2)
+            if state.understanding
+            else "{}"
+        ),
         narrative_json=narrative_json,
     )
 
@@ -513,8 +682,12 @@ def plan_deck(state: AgentState) -> AgentState:
     deck_plan = ensure_required_slides(deck_plan)
     deck_plan = order_deck(deck_plan)
     deck_plan = polish_deck_text(deck_plan)
-    deck_plan = enforce_slide_budget(deck_plan, 14, 18, deck_mode=state.deck_mode, understanding=state.understanding)
-    deck_plan = ensure_diagrams_for_key_slides(deck_plan, understanding=state.understanding)
+    deck_plan = enforce_slide_budget(
+        deck_plan, 14, 18, deck_mode=state.deck_mode, understanding=state.understanding
+    )
+    deck_plan = ensure_diagrams_for_key_slides(
+        deck_plan, understanding=state.understanding
+    )
 
     state.deck_plan = deck_plan
     return state

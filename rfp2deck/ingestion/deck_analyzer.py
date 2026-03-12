@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
 
+
 @dataclass
 class TemplateInfo:
     slide_layout_names: List[str]
     masters: List[str]
     placeholder_map: Dict[str, Any]
+
 
 def analyze_pptx_template(path: Path) -> TemplateInfo:
     prs = Presentation(str(path))
@@ -27,11 +29,17 @@ def analyze_pptx_template(path: Path) -> TemplateInfo:
         lname = getattr(layout, "name", "layout")
         phs = []
         for shape in layout.placeholders:
-            phs.append({
-                "idx": shape.placeholder_format.idx,
-                "type": str(shape.placeholder_format.type),
-                "name": shape.name,
-            })
+            phs.append(
+                {
+                    "idx": shape.placeholder_format.idx,
+                    "type": str(shape.placeholder_format.type),
+                    "name": shape.name,
+                }
+            )
         placeholder_map[lname] = phs
 
-    return TemplateInfo(slide_layout_names=layout_names, masters=masters, placeholder_map=placeholder_map)
+    return TemplateInfo(
+        slide_layout_names=layout_names,
+        masters=masters,
+        placeholder_map=placeholder_map,
+    )

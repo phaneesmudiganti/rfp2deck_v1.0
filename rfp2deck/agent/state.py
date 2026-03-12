@@ -1,7 +1,14 @@
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-from rfp2deck.core.schemas import RFPUnderstanding, DeckPlan, TraceabilityReport, ExecutiveNarrative, SectionPlan
+from rfp2deck.core.schemas import (
+    RFPUnderstanding,
+    DeckPlan,
+    TraceabilityReport,
+    ExecutiveNarrative,
+    SectionPlan,
+)
+
 
 class AgentState(BaseModel):
     narrative: Optional[ExecutiveNarrative] = None

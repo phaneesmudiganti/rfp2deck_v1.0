@@ -1,35 +1,66 @@
 from __future__ import annotations
 
+"""Streamlit UI for generating proposal decks from RFP inputs."""
+
 from pathlib import Path
-import sys
 import os
+import sys
+
 import streamlit as st
 from streamlit.runtime.secrets import StreamlitSecretNotFoundError
 
-# Map Streamlit secrets to environment variables (ignore if no secrets.toml present)
+try:
+    from rfp2deck.core.config import settings
+    from rfp2deck.core.logging import setup_logging
+    from rfp2deck.core.schemas import DeckPlan, TraceabilityReport
+    from rfp2deck.ingestion.pdf_parser import parse_pdf
+    from rfp2deck.ingestion.docx_parser import parse_docx
+    from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
+    from rfp2deck.rag.indexer import (
+        chunk_text,
+        build_faiss_index,
+        load_index,
+        save_index,
+    )
+    from rfp2deck.rag.retriever import retrieve
+    from rfp2deck.agent.graph import build_graph
+    from rfp2deck.agent.state import AgentState
+    from rfp2deck.rendering.pptx_renderer import render_deck_from_template
+    from rfp2deck.diagrams.generator import generate_diagram_png
+except ModuleNotFoundError:
+    # Ensure local package imports work when running via `streamlit run app/streamlit_app.py`.
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from rfp2deck.core.config import settings
+    from rfp2deck.core.logging import setup_logging
+    from rfp2deck.core.schemas import DeckPlan, TraceabilityReport
+    from rfp2deck.ingestion.pdf_parser import parse_pdf
+    from rfp2deck.ingestion.docx_parser import parse_docx
+    from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
+    from rfp2deck.rag.indexer import (
+        chunk_text,
+        build_faiss_index,
+        load_index,
+        save_index,
+    )
+    from rfp2deck.rag.retriever import retrieve
+    from rfp2deck.agent.graph import build_graph
+    from rfp2deck.agent.state import AgentState
+    from rfp2deck.rendering.pptx_renderer import render_deck_from_template
+    from rfp2deck.diagrams.generator import generate_diagram_png
+
+
+# Map Streamlit secrets to environment variables (ignore if no secrets.toml present).
 try:
     for key, value in st.secrets.items():
         os.environ[key] = str(value)
 except StreamlitSecretNotFoundError:
     pass
 
-# Ensure local package imports work when running via `streamlit run app/streamlit_app.py`
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from rfp2deck.core.config import settings
-from rfp2deck.core.logging import setup_logging
-from rfp2deck.core.schemas import DeckPlan, TraceabilityReport
-from rfp2deck.ingestion.pdf_parser import parse_pdf
-from rfp2deck.ingestion.docx_parser import parse_docx
-from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
-from rfp2deck.rag.indexer import chunk_text, build_faiss_index, save_index, load_index
-from rfp2deck.rag.retriever import retrieve
-from rfp2deck.agent.graph import build_graph
-from rfp2deck.agent.state import AgentState
-from rfp2deck.rendering.pptx_renderer import render_deck_from_template
-from rfp2deck.diagrams.generator import generate_diagram_png
+# Project root path for local assets.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 setup_logging()
 st.set_page_config(page_title="RFP → Proposal Deck Agent", layout="wide")
@@ -69,24 +100,41 @@ with st.sidebar:
 
     st.write("Models are configured via `.env`.")
     st.code(
-        f"Reasoning model: {settings.model_reasoning}\n"
-        f"Fast model: {settings.model_fast}\n"
-        f"Embeddings: {settings.embeddings_model}"
+        "Reasoning model: {reasoning}\n"
+        "Fast model: {fast}\n"
+        "Embeddings: {embeddings}".format(
+            reasoning=settings.model_reasoning,
+            fast=settings.model_fast,
+            embeddings=settings.embeddings_model,
+        )
     )
 
-    enable_diagrams = st.checkbox("Enable diagram generation (guarded + approval)", value=True)
+    enable_diagrams = st.checkbox(
+        "Enable diagram generation (guarded + approval)", value=True
+    )
     diagram_model = st.text_input("Diagram model", value="gpt-image-1")
-    diagram_size = st.selectbox("Diagram size", options=["1024x1024", "1024x768", "768x1024"], index=0)
+    diagram_size = st.selectbox(
+        "Diagram size",
+        options=["1024x1024", "1024x768", "768x1024"],
+        index=0,
+    )
 
-    build_index = st.checkbox("Build/Update RAG index from uploaded reference text (optional)", value=False)
-    st.caption("Tip: upload a TXT file of reusable assets/proposal boilerplates to build a quick index.")
+    build_index = st.checkbox(
+        "Build/Update RAG index from uploaded reference text (optional)", value=False
+    )
+    st.caption(
+        "Tip: upload a TXT file of reusable assets/proposal boilerplates "
+        "to build a quick index."
+    )
 
     st.divider()
     st.caption("Template")
     if STANDARD_TEMPLATE.exists():
         st.success(f"Using embedded template: {STANDARD_TEMPLATE.name}")
     else:
-        st.error("Embedded template missing. Ensure templates/standard_proposal_template_v1.pptx exists.")
+        st.error(
+            "Embedded template missing. Ensure templates/standard_proposal_template_v1.pptx exists."
+        )
 
     if st.button("Reset wizard", use_container_width=True):
         keys = [
@@ -104,24 +152,40 @@ with st.sidebar:
                 del st.session_state[k]
         st.rerun()
 
+
 # ----------------------------
 # Helpers
 # ----------------------------
 def save_upload(upload, dest: Path) -> Path:
+    """Persist a Streamlit upload to disk and return its path."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(upload.getvalue())
     return dest
 
+
 def parse_rfp(path: Path) -> tuple[str, dict]:
+    """Parse a single RFP file and return its extracted text and metadata."""
     if path.suffix.lower() == ".pdf":
         parsed = parse_pdf(path)
         st.success(f"Parsed PDF ({parsed.page_count} pages).")
-        return parsed.text, {"name": path.name, "type": "pdf", "pages": parsed.page_count}
+        return (
+            parsed.text,
+            {"name": path.name, "type": "pdf", "pages": parsed.page_count},
+        )
     parsed = parse_docx(path)
     st.success(f"Parsed DOCX ({parsed.paragraph_count} paragraphs).")
-    return parsed.text, {"name": path.name, "type": "docx", "paragraphs": parsed.paragraph_count}
+    return (
+        parsed.text,
+        {
+            "name": path.name,
+            "type": "docx",
+            "paragraphs": parsed.paragraph_count,
+        },
+    )
+
 
 def parse_rfps(paths: list[Path]) -> tuple[str, list[dict], int, int]:
+    """Parse multiple RFPs and return combined text and summary stats."""
     texts: list[str] = []
     summaries: list[dict] = []
     total_pages = 0
@@ -137,14 +201,18 @@ def parse_rfps(paths: list[Path]) -> tuple[str, list[dict], int, int]:
             total_paragraphs += int(meta.get("paragraphs", 0))
     return "\n\n".join(texts), summaries, total_pages, total_paragraphs
 
+
 def normalize_models(deck_plan, report):
+    """Normalize dict responses into Pydantic models."""
     if isinstance(deck_plan, dict):
         deck_plan = DeckPlan.model_validate(deck_plan)
     if report is not None and isinstance(report, dict):
         report = TraceabilityReport.model_validate(report)
     return deck_plan, report
 
+
 def count_diagrams(plan: DeckPlan):
+    """Count total diagrams and approved diagrams in the plan."""
     total = 0
     approved = 0
     for s in plan.slides:
@@ -154,7 +222,9 @@ def count_diagrams(plan: DeckPlan):
                 approved += 1
     return total, approved
 
+
 def wizard_header(step: int):
+    """Render the wizard header and navigation controls."""
     labels = ["Upload & Plan", "Diagrams & Approval", "Render & Download"]
     step = max(1, min(3, int(step)))
     idx = step - 1
@@ -170,23 +240,29 @@ def wizard_header(step: int):
     st.markdown(" | ".join(chips))
     st.progress(idx / 2.0)
 
-    colA, colB, colC, colD = st.columns([1, 1, 1, 2])
-    with colA:
+    col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 2])
+    with col_a:
         if st.button("← Back", disabled=(step == 1), use_container_width=True):
             st.session_state.wizard_step = max(1, step - 1)
             st.rerun()
-    with colB:
+    with col_b:
         can_go_2 = st.session_state.deck_plan is not None
         if st.button("Go to Step 2", disabled=not can_go_2, use_container_width=True):
             st.session_state.wizard_step = 2
             st.rerun()
-    with colC:
-        can_go_3 = (st.session_state.deck_plan is not None) and (st.session_state.tpl_path is not None)
+    with col_c:
+        can_go_3 = (
+            st.session_state.deck_plan is not None
+            and st.session_state.tpl_path is not None
+        )
         if st.button("Go to Step 3", disabled=not can_go_3, use_container_width=True):
             st.session_state.wizard_step = 3
             st.rerun()
     with colD:
-        st.caption("Tip: Streamlit reruns on every click — state is preserved in session_state.")
+        st.caption(
+            "Tip: Streamlit reruns on every click — state is preserved in session_state."
+        )
+
 
 # Guard: if plan missing, force step 1
 if st.session_state.deck_plan is None and st.session_state.wizard_step != 1:
@@ -210,15 +286,21 @@ if st.session_state.wizard_step == 1:
             accept_multiple_files=True,
         )
     with c2:
-        ref_txt = st.file_uploader("Optional: Reusable content (TXT) for RAG", type=["txt"], key="ref_step1")
+        ref_txt = st.file_uploader(
+            "Optional: Reusable content (TXT) for RAG", type=["txt"], key="ref_step1"
+        )
         st.caption("Enable 'Build/Update RAG index' in sidebar to index this TXT.")
 
     with st.form("step1_form"):
-        submitted = st.form_submit_button("Generate Plan (Step 1)", type="primary", use_container_width=True)
+        submitted = st.form_submit_button(
+            "Generate Plan (Step 1)", type="primary", use_container_width=True
+        )
 
     if submitted:
         if not STANDARD_TEMPLATE.exists():
-            st.error("Embedded template is missing. Please restore templates/standard_proposal_template_v1.pptx")
+            st.error(
+                "Embedded template is missing. Please restore templates/standard_proposal_template_v1.pptx"
+            )
             st.stop()
 
         if not rfp_files:
@@ -229,12 +311,16 @@ if st.session_state.wizard_step == 1:
         rfp_paths: list[Path] = []
         for rfp_file in rfp_files:
             rfp_paths.append(
-                save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
+                save_upload(
+                    rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}"
+                )
             )
         st.session_state.rfp_paths = [str(p) for p in rfp_paths]
 
         # Use embedded template (copy into data/uploads for reproducibility)
-        tpl_copy = settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
+        tpl_copy = (
+            settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
+        )
         tpl_copy.write_bytes(STANDARD_TEMPLATE.read_bytes())
         st.session_state.tpl_path = str(tpl_copy)
 
@@ -245,9 +331,21 @@ if st.session_state.wizard_step == 1:
             rows = []
             for s in rfp_summaries:
                 if s.get("type") == "pdf":
-                    rows.append({"File": s["name"], "Type": "PDF", "Count": f'{s.get("pages", 0)} pages'})
+                    rows.append(
+                        {
+                            "File": s["name"],
+                            "Type": "PDF",
+                            "Count": f'{s.get("pages", 0)} pages',
+                        }
+                    )
                 else:
-                    rows.append({"File": s["name"], "Type": "DOCX", "Count": f'{s.get("paragraphs", 0)} paragraphs'})
+                    rows.append(
+                        {
+                            "File": s["name"],
+                            "Type": "DOCX",
+                            "Count": f'{s.get("paragraphs", 0)} paragraphs',
+                        }
+                    )
             st.table(rows)
             st.caption(f"Totals: {total_pages} pages, {total_paragraphs} paragraphs")
 
@@ -265,7 +363,9 @@ if st.session_state.wizard_step == 1:
         retrieved_context = None
         rag_dir = settings.data_dir / "indexes" / "default_rag"
         if ref_txt and build_index:
-            ref_path = save_upload(ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}")
+            ref_path = save_upload(
+                ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}"
+            )
             ref_text = ref_path.read_text(encoding="utf-8", errors="ignore")
             chunks = chunk_text(ref_text)
             rag = build_faiss_index(chunks)
@@ -275,15 +375,21 @@ if st.session_state.wizard_step == 1:
         if rag_dir.exists() and (rag_dir / "index.faiss").exists():
             rag = load_index(rag_dir)
             top = retrieve(rag, "reusable proposal content for this RFP", k=6)
-            retrieved_context = "\n\n".join([f"[score={c.score:.3f}]\n{c.text}" for c in top])
+            retrieved_context = "\n\n".join(
+                [f"[score={c.score:.3f}]\n{c.text}" for c in top]
+            )
             st.caption("Retrieved reusable context from local RAG index.")
 
         st.session_state.retrieved_context = retrieved_context
 
         # Run agent
         graph = build_graph()
-        state = AgentState(rfp_text=rfp_text, template_info=template_info, retrieved_context=retrieved_context)
-        state.deck_mode = st.session_state.get('deck_mode')
+        state = AgentState(
+            rfp_text=rfp_text,
+            template_info=template_info,
+            retrieved_context=retrieved_context,
+        )
+        state.deck_mode = st.session_state.get("deck_mode")
 
         final_state = graph.invoke(state)
 
@@ -327,15 +433,23 @@ if st.session_state.wizard_step == 2:
     if plan:
         with st.expander("Diagram Coverage (diagnostics)"):
             total = len(plan.slides)
-            with_prompt = sum(1 for s in plan.slides if getattr(s, "diagram", None) is not None)
+            with_prompt = sum(
+                1 for s in plan.slides if getattr(s, "diagram", None) is not None
+            )
             st.write(f"Slides: {total} | With diagram prompts: {with_prompt}")
-            missing = [f"{s.slide_id}: {s.title} ({s.archetype})" for s in plan.slides if getattr(s, "diagram", None) is None and (str(s.archetype).lower() in ['architecture','team'])]
+            missing = [
+                f"{s.slide_id}: {s.title} ({s.archetype})"
+                for s in plan.slides
+                if getattr(s, "diagram", None) is None
+                and (str(s.archetype).lower() in ["architecture", "team"])
+            ]
             if missing:
-                st.warning("Missing DiagramSpec on key slides (should be fixed in v4.5.5):")
+                st.warning(
+                    "Missing DiagramSpec on key slides (should be fixed in v4.5.5):"
+                )
                 st.code("\n".join(missing))
             else:
                 st.success("All key slides have diagram prompts.")
-
 
     if st.session_state.deck_plan is None:
         st.error("No deck plan found. Please complete Step 1.")
@@ -360,9 +474,13 @@ if st.session_state.wizard_step == 2:
 
     colL, colR = st.columns([1, 1])
     with colL:
-        gen_clicked = st.button("Generate / Regenerate Diagrams", type="primary", use_container_width=True)
+        gen_clicked = st.button(
+            "Generate / Regenerate Diagrams", type="primary", use_container_width=True
+        )
     with colR:
-        st.caption("You can regenerate after changing diagram model/size in the sidebar.")
+        st.caption(
+            "You can regenerate after changing diagram model/size in the sidebar."
+        )
 
     if gen_clicked:
         diagrams_dir = settings.data_dir / "outputs" / "diagrams"
@@ -374,7 +492,9 @@ if st.session_state.wizard_step == 2:
                 continue
             out_img = diagrams_dir / f"{s.slide_id}.png"
             try:
-                generate_diagram_png(s.diagram.prompt, out_img, model=diagram_model, size=diagram_size)
+                generate_diagram_png(
+                    s.diagram.prompt, out_img, model=diagram_model, size=diagram_size
+                )
                 s.diagram.image_path = str(out_img)
                 made += 1
             except Exception as e:
@@ -387,7 +507,9 @@ if st.session_state.wizard_step == 2:
 
     any_images = any((s.diagram and s.diagram.image_path) for s in plan.slides)
     if not any_images:
-        st.info("No diagram images generated yet. Click **Generate / Regenerate Diagrams** above.")
+        st.info(
+            "No diagram images generated yet. Click **Generate / Regenerate Diagrams** above."
+        )
         st.stop()
 
     st.markdown("### Diagram Review & Approval")
@@ -397,10 +519,8 @@ if st.session_state.wizard_step == 2:
             if not s.diagram or not s.diagram.image_path:
                 continue
 
-            st.markdown(
-                f"""**{s.slide_id} — {s.title}**  
-Kind: `{s.diagram.kind}`"""
-            )
+            st.markdown(f"""**{s.slide_id} — {s.title}**  
+Kind: `{s.diagram.kind}`""")
 
             img_path = Path(s.diagram.image_path)
             if img_path.exists():
@@ -412,7 +532,9 @@ Kind: `{s.diagram.kind}`"""
                 key=f"approve_{s.slide_id}",
             )
 
-        save = st.form_submit_button("Save approvals and continue", type="primary", use_container_width=True)
+        save = st.form_submit_button(
+            "Save approvals and continue", type="primary", use_container_width=True
+        )
 
     if save:
         st.session_state.deck_plan = plan
@@ -451,7 +573,9 @@ if st.session_state.wizard_step == 3:
 
         report_path = settings.data_dir / "reports" / "traceability.json"
         if st.session_state.report:
-            report_path.write_text(st.session_state.report.model_dump_json(indent=2), encoding="utf-8")
+            report_path.write_text(
+                st.session_state.report.model_dump_json(indent=2), encoding="utf-8"
+            )
 
         st.success("Rendered PPTX successfully.")
 

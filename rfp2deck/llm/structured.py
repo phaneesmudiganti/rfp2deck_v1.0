@@ -25,7 +25,9 @@ def _resolve_json_pointer(ref: str, defs: Dict[str, Any]) -> Any:
     raise ValueError(f"Unsupported $ref root: {root} in {ref}")
 
 
-def _dereference(schema: Any, defs: Dict[str, Any], seen: set[str] | None = None) -> Any:
+def _dereference(
+    schema: Any, defs: Dict[str, Any], seen: set[str] | None = None
+) -> Any:
     if seen is None:
         seen = set()
     if isinstance(schema, list):

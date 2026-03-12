@@ -3,10 +3,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import fitz  # PyMuPDF
 
+
 @dataclass
 class ParsedDoc:
     text: str
     page_count: int
+
 
 def parse_pdf(path: Path) -> ParsedDoc:
     doc = fitz.open(path)
