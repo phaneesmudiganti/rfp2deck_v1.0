@@ -258,7 +258,7 @@ def wizard_header(step: int):
         if st.button("Go to Step 3", disabled=not can_go_3, use_container_width=True):
             st.session_state.wizard_step = 3
             st.rerun()
-    with colD:
+    with col_d:
         st.caption(
             "Tip: Streamlit reruns on every click — state is preserved in session_state."
         )
