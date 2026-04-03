@@ -174,22 +174,7 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
                 "Our recommended approach and solution highlights",
                 "Business impact and expected outcomes",
             ],
-            diagram=DiagramSpec(
-                prompt=_exec_summary_diagram_prompt(
-                    SlideSpec(
-                        slide_id="exec_summary",
-                        title="Executive Summary",
-                        archetype="Solution Overview",
-                        bullets=[
-                            "Opportunity and key objectives",
-                            "Our recommended approach and solution highlights",
-                            "Business impact and expected outcomes",
-                        ],
-                    )
-                ),
-                approved=False,
-                image_path=None,
-            ),
+            diagram=None,
         )
 
     # Customer Context
@@ -424,15 +409,16 @@ def ensure_diagrams_for_key_slides(deck_plan: DeckPlan, understanding: RFPUnders
                     prompt = "Create a team org chart showing key roles (6–10) and reporting lines."
                 elif arch == "solution overview":
                     if _is_exec_summary(s):
-                        prompt = _exec_summary_diagram_prompt(s)
+                        # Exec Summary is better rendered as native PPTX text, not an image.
+                        prompt = ""
                     else:
                         prompt = "Create a solution overview diagram showing major building blocks and value streams."
 
                 if prompt:
                     s.diagram = DiagramSpec(prompt=prompt, approved=False, image_path=None)
             elif arch == "solution overview" and _is_exec_summary(s):
-                # Upgrade any legacy/low-detail prompt to a stronger, text-specific version.
-                s.diagram.prompt = _exec_summary_diagram_prompt(s)
+                # Remove any legacy Exec Summary diagram to keep it text-native.
+                s.diagram = None
 
         # Appendix architecture deep dives (if present as Content slides)
         if "appendix" in title and understanding is not None:
