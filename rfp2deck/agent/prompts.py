@@ -44,6 +44,44 @@ RFP_TEXT:
 {rfp_text}
 """
 
+SECTION_TAXONOMY_PROMPT = """
+You are a proposal analyst specializing in section classification.
+
+TASK:
+Classify the RFP into a concise section taxonomy that helps with slide subtitles
+and narrative flow.
+
+INSTRUCTIONS:
+- Use only information present in the RFP_TEXT (and optional reusable context).
+- Do not invent sections that are not grounded in the RFP.
+- If the RFP lacks a clear structure, infer a minimal, reasonable grouping from
+  headings or topic shifts without adding new requirements.
+
+OUTPUT FORMAT:
+- Return a single JSON object.
+- Suggested structure:
+  {{
+    "sections": [
+      {{
+        "section_id": "string",
+        "title": "string",
+        "summary": "string",
+        "category": "one of: context|requirements|approach|architecture|delivery|governance|commercials|team|risk|timeline|other",
+        "key_topics": ["string", "..."],
+        "source_refs": ["optional heading or page references if available"]
+      }}
+    ]
+  }}
+- If you cannot confidently classify, return {{"sections": []}}.
+- Do not include any text outside the JSON.
+
+RFP_TEXT:
+{rfp_text}
+
+REUSABLE CONTEXT (optional):
+{rag_context}
+"""
+
 DECK_PLAN_PROMPT = """
 You are a senior consulting proposal deck designer.
 
@@ -116,7 +154,7 @@ RFP UNDERSTANDING (JSON):
 {understanding_json}
 
 REUSABLE CONTEXT (optional):
-{retrieved_context}
+{rag_context}
 """
 
 TRACEABILITY_PROMPT = """
@@ -207,7 +245,7 @@ RFP understanding (JSON):
 {understanding_json}
 
 Reusable context (optional):
-{retrieved_context}
+{rag_context}
 """
 
 DECK_PLAN_V2_PROMPT = """
@@ -229,21 +267,7 @@ RULES:
   - Ingress / Egress flows
   - Canonical data model
   - Operating model / governance
-- HARD STORYLINE (keep this flow):
-  1) Title
-  2) Agenda
-  3) Executive Summary (must be early; slide 3 ideally)
-  4) Current State & Key Pain Points (what's broken / constraints)
-  5) Objectives & Success Criteria (what "good" looks like)
-  6) Requirements (what must be delivered)
-  7) Solution Overview (workstreams / approach)
-  8) Architecture (visual, not paragraph text)
-  9) Delivery & Governance (operating model, cadence, controls)
-  10) Roadmap / Timeline (visual)
-  11) Risks & Mitigations (top risks only)
-  12) Team (include org/RACI visual)
-  13) Commercials (assumptions + model)
-  14) Next Steps
+- If reusable context contains mandatory sections or standards, you MUST incorporate them into the slide plan unless they conflict with the RFP.
 - For visual slides, specify a `diagram` object including at least:
   - `diagram_type` (e.g., layered architecture, sequence flow, data flow, swimlane roadmap).
   - `diagram_prompt` (clear description of what should be shown).
@@ -311,7 +335,7 @@ Placeholder map (truncated):
 {placeholder_map}
 
 Reusable context (optional, truncated):
-{retrieved_context}
+{rag_context}
 
 RFP understanding (JSON):
 {understanding_json}
@@ -410,5 +434,5 @@ RFP UNDERSTANDING (JSON):
 {understanding_json}
 
 REUSABLE CONTEXT (optional):
-{retrieved_context}
+{rag_context}
 """

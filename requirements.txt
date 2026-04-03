@@ -13,6 +13,8 @@ PyMuPDF>=1.24.7
 # RAG
 faiss-cpu>=1.8.0.post1
 numpy>=1.26
+msal>=1.30.0
+requests>=2.32.0
 
 # PPTX rendering
 python-pptx>=0.6.23

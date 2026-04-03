@@ -73,6 +73,34 @@ class SectionPlan(BaseModel):
     sections: List[SectionSpec] = Field(default_factory=list)
 
 
+SectionTaxonomyCategory = Literal[
+    "context",
+    "requirements",
+    "approach",
+    "architecture",
+    "delivery",
+    "governance",
+    "commercials",
+    "team",
+    "risk",
+    "timeline",
+    "other",
+]
+
+
+class SectionTaxonomyItem(BaseModel):
+    section_id: str
+    title: str
+    summary: str
+    category: SectionTaxonomyCategory = "other"
+    key_topics: List[str] = Field(default_factory=list)
+    source_refs: List[str] = Field(default_factory=list)
+
+
+class SectionTaxonomy(BaseModel):
+    sections: List[SectionTaxonomyItem] = Field(default_factory=list)
+
+
 class ExecutiveNarrative(BaseModel):
     value_proposition: str
     strategic_outcomes: List[str] = Field(default_factory=list)

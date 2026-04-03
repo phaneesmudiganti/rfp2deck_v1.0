@@ -17,6 +17,9 @@ class Settings:
     embeddings_model: str = os.getenv("OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-large")
     data_dir: Path = Path(os.getenv("APP_DATA_DIR", ".data"))
     openai_timeout_s: float = float(os.getenv("OPENAI_TIMEOUT_S", "120"))
+    sp_tenant_id: str = os.getenv("SP_TENANT_ID", "")
+    sp_client_id: str = os.getenv("SP_CLIENT_ID", "")
+    sp_scopes: str = os.getenv("SP_SCOPES", "Files.Read.All,Sites.Read.All")
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

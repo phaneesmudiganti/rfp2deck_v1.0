@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-streamlit run app/streamlit_app.py
+streamlit run app/rfp2deck_app.py

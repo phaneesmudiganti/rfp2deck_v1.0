@@ -22,7 +22,7 @@ A modular starter project that turns:
 ```
 rfp2deck_agent/
   app/
-    streamlit_app.py                 # Streamlit UI (3-step flow)
+    rfp2deck_app.py                 # Streamlit UI (3-step flow)
   rfp2deck/
     core/
       config.py                      # Settings / env loading
@@ -31,11 +31,14 @@ rfp2deck_agent/
     ingestion/
       pdf_parser.py                  # PDF → text (PyMuPDF)
       docx_parser.py                 # DOCX → text (python-docx)
+      pptx_parser.py                 # PPTX -> text (python-pptx)
       deck_analyzer.py               # PPTX template analysis (layouts/placeholders)
     rag/
       embeddings.py                  # OpenAI embeddings
       indexer.py                     # chunking + FAISS index build/save/load
       retriever.py                   # top-k retrieval
+      sharepoint_client.py           # SharePoint device-code auth + Graph helpers
+      sharepoint_index.py            # SharePoint -> RAG index builder
     llm/
       openai_client.py               # OpenAI SDK client helper
       structured.py                  # Responses API call with strict JSON schema output
@@ -97,13 +100,32 @@ Edit `.env` and set:
   - `OPENAI_EMBEDDINGS_MODEL=text-embedding-3-large`
 - (optional) app data directory:
   - `APP_DATA_DIR=.data`
+- (optional) SharePoint (device-code auth):
+  - `SP_TENANT_ID=...`
+  - `SP_CLIENT_ID=...`
+  - `SP_SCOPES=Files.Read.All,Sites.Read.All`
 
 ---
 
 ## Run the app
 ```bash
-streamlit run app/streamlit_app.py
+streamlit run app/rfp2deck_app.py
 ```
+
+## Build a SharePoint RAG index (device-code auth)
+This builds a local FAISS index from PPTX proposals in SharePoint and writes it to
+`.data/indexes/default_rag`, which the UI already consumes for retrieval.
+
+```bash
+python -m rfp2deck.rag.sharepoint_index --site-url "https://contoso.sharepoint.com/sites/Proposals" --folder-path "Shared Documents/Proposals"
+```
+
+Optional flags:
+- `--library-name` to target a specific library/drive name
+- `--extensions pptx` (comma-separated)
+- `--max-files 200`
+- `--out-dir .data/indexes/default_rag`
+
 
 ---
 
@@ -116,7 +138,8 @@ Upload:
 (Optional) reference content TXT for RAG
 
 Click **Step 1: Generate Plan** to get:
-- deck plan JSON (slides, archetypes, bullets)
+- executive narrative spine (high-level story for CXO audience)
+- deck plan JSON (slides, archetypes, bullets) aligned to the narrative
 - traceability report JSON
 
 ### Step 2: Generate Diagrams (preview)

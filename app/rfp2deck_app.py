@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-"""Streamlit UI for generating proposal decks from RFP inputs."""
+"""UI for generating proposal decks from RFP inputs."""
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -28,7 +29,7 @@ try:
     from rfp2deck.rag.retriever import retrieve
     from rfp2deck.rendering.pptx_renderer import render_deck_from_template
 except ModuleNotFoundError:
-    # Ensure local package imports work when running via `streamlit run app/streamlit_app.py`.
+    # Ensure local package imports work when running via `streamlit run app/rfp2deck_app.py`.
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
@@ -268,6 +269,38 @@ def render_step_progress(value: float, text: str) -> None:
     st.caption(text)
 
 
+def _slugify(value: str) -> str:
+    """Make a filesystem-safe, ASCII-only filename fragment."""
+    value = re.sub(r"[^\w\s-]", "", value, flags=re.ASCII).strip().lower()
+    value = re.sub(r"[-\s]+", "-", value, flags=re.ASCII)
+    return value.strip("-") or "proposal"
+
+
+def _unique_path(path: Path) -> Path:
+    """Avoid overwriting existing outputs by appending a counter."""
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for i in range(2, 1000):
+        candidate = path.with_name(f"{stem}-{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    return path
+
+
+def build_output_filename(plan: DeckPlan, rfp_paths: list[str] | None) -> str:
+    """Generate a descriptive PPTX filename based on the deck plan/RFP."""
+    title = (getattr(plan, "deck_title", "") or "").strip()
+    if title and "not specified" not in title.lower():
+        base = _slugify(title)
+    elif rfp_paths:
+        base = _slugify(Path(rfp_paths[0]).stem)
+    else:
+        base = "proposal"
+    return f"{base}.pptx"
+
+
 def stop_on_error(message: str, status: st.delta_generator.DeltaGenerator | None, exc: Exception):
     """Show error details, mark status as failed, and stop execution."""
     if status is not None:
@@ -399,7 +432,13 @@ if st.session_state.wizard_step == 1:
 
             if rag_dir.exists() and (rag_dir / "index.faiss").exists():
                 rag = load_index(rag_dir)
-                top = retrieve(rag, "reusable proposal content for this RFP", k=6)
+                query = """
+                mandatory proposal sections, required slides,
+                governance model, compliance, team structure,
+                risk framework, commercial assumptions,
+                architecture standards, delivery model
+                """
+                top = retrieve(rag, query, k=10)
                 retrieved_context = "\n\n".join([f"[score={c.score:.3f}]\n{c.text}" for c in top])
                 st.caption("Retrieved reusable context from local RAG index.")
 
@@ -621,7 +660,8 @@ if st.session_state.wizard_step == 3:
     if render_now:
         render_progress = st.progress(0.2)
         render_status = st.status("Rendering outputs...", expanded=False)
-        out_pptx = settings.data_dir / "outputs" / "generated_proposal.pptx"
+        out_name = build_output_filename(plan, st.session_state.get("rfp_paths"))
+        out_pptx = _unique_path(settings.data_dir / "outputs" / out_name)
         try:
             render_deck_from_template(plan, tpl_path, out_pptx)
             render_progress.progress(0.7)

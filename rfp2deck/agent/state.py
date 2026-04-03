@@ -18,10 +18,16 @@ class AgentState(BaseModel):
     rfp_text: str
     template_info: Dict[str, Any]
     retrieved_context: Optional[str] = None
+    rag_context: Optional[str] = None
     understanding: Optional[RFPUnderstanding] = None
+    section_map: Optional[Dict[str, Any]] = None
     section_plan: Optional[SectionPlan] = None
     deck_plan: Optional[DeckPlan] = None
     pptx_path: Optional[str] = None
     report: Optional[TraceabilityReport] = None
     deck_mode: Optional[str] = None
     debug: Dict[str, Any] = {}
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.rag_context is None:
+            self.rag_context = self.retrieved_context
