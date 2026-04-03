@@ -51,13 +51,35 @@ except ModuleNotFoundError:
     from rfp2deck.rag.retriever import retrieve
     from rfp2deck.rendering.pptx_renderer import render_deck_from_template
 
+# Set APP_PASSWORD so that the public URL is not accessed by all 
+# The password in the UI should match with the APP_PASSWORD set in the environment variables.
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+
+# Initialize auth state
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+# If not authenticated → show password input
+if not st.session_state.authenticated:
+    pwd = st.text_input("Enter password", type="password")
+
+    if pwd:
+        if pwd == APP_PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()  #Important: refresh UI to remove input
+        else:
+            st.error("Incorrect password")
+            st.stop()
+
+    st.stop()  # stop app until correct password entered
 
 # Map Streamlit secrets to environment variables (ignore if no secrets.toml present).
-try:
-    for key, value in st.secrets.items():
-        os.environ[key] = str(value)
-except StreamlitSecretNotFoundError:
-    pass
+# COMMENTING THIS AS STREAMLIT.APP DOMAIN IS NOT ALLOWED IN HCLTECH.
+# try:
+#     for key, value in st.secrets.items():
+#         os.environ[key] = str(value)
+# except StreamlitSecretNotFoundError:
+#     pass
 
 
 # Project root path for local assets.
