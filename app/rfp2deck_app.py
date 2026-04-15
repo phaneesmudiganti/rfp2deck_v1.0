@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import streamlit as st
-from streamlit.runtime.secrets import StreamlitSecretNotFoundError
 
 try:
     from rfp2deck.agent.graph import build_graph
@@ -20,12 +19,7 @@ try:
     from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
     from rfp2deck.ingestion.docx_parser import parse_docx
     from rfp2deck.ingestion.pdf_parser import parse_pdf
-    from rfp2deck.rag.indexer import (
-        build_faiss_index,
-        chunk_text,
-        load_index,
-        save_index,
-    )
+    from rfp2deck.rag.indexer import build_faiss_index, chunk_text
     from rfp2deck.rag.retriever import retrieve
     from rfp2deck.rendering.pptx_renderer import render_deck_from_template
 except ModuleNotFoundError:
@@ -42,12 +36,7 @@ except ModuleNotFoundError:
     from rfp2deck.ingestion.deck_analyzer import analyze_pptx_template
     from rfp2deck.ingestion.docx_parser import parse_docx
     from rfp2deck.ingestion.pdf_parser import parse_pdf
-    from rfp2deck.rag.indexer import (
-        build_faiss_index,
-        chunk_text,
-        load_index,
-        save_index,
-    )
+    from rfp2deck.rag.indexer import build_faiss_index, chunk_text
     from rfp2deck.rag.retriever import retrieve
     from rfp2deck.rendering.pptx_renderer import render_deck_from_template
 
@@ -87,7 +76,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 setup_logging()
 st.set_page_config(page_title="RFP → Proposal Deck Agent", layout="wide")
-settings.ensure_dirs()
+
 
 st.title("RFP → Proposal Deck Generator (Standard Template)")
 
@@ -97,11 +86,13 @@ st.title("RFP → Proposal Deck Generator (Standard Template)")
 st.session_state.setdefault("wizard_step", 1)  # 1,2,3
 st.session_state.setdefault("deck_plan", None)
 st.session_state.setdefault("report", None)
-st.session_state.setdefault("tpl_path", None)
-st.session_state.setdefault("rfp_paths", None)
+st.session_state.setdefault("tpl_bytes", None)
+st.session_state.setdefault("rfp_names", None)
 st.session_state.setdefault("template_info", None)
 st.session_state.setdefault("retrieved_context", None)
 st.session_state.setdefault("diagrams_generated", False)  # ran generation at least once
+st.session_state.setdefault("diagram_images", {})
+st.session_state.setdefault("rag_index", None)
 
 # Embedded standard template path (no UI upload required)
 STANDARD_TEMPLATE = PROJECT_ROOT / "templates" / "standard_proposal_template_v1.pptx"
@@ -166,11 +157,13 @@ with st.sidebar:
             "wizard_step",
             "deck_plan",
             "report",
-            "tpl_path",
-            "rfp_paths",
+            "tpl_bytes",
+            "rfp_names",
             "template_info",
             "retrieved_context",
             "diagrams_generated",
+            "diagram_images",
+            "rag_index",
             "render_complete",
         ]
         for k in keys:
@@ -182,43 +175,40 @@ with st.sidebar:
 # ----------------------------
 # Helpers
 # ----------------------------
-def save_upload(upload, dest: Path) -> Path:
-    """Persist a Streamlit upload to disk and return its path."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(upload.getvalue())
-    return dest
-
-
-def parse_rfp(path: Path) -> tuple[str, dict]:
-    """Parse a single RFP file and return its extracted text and metadata."""
-    if path.suffix.lower() == ".pdf":
-        parsed = parse_pdf(path)
+def parse_rfp(upload) -> tuple[str, dict]:
+    """Parse a single RFP upload and return its extracted text and metadata."""
+    name = getattr(upload, "name", "rfp")
+    suffix = Path(name).suffix.lower()
+    data = upload.getvalue()
+    if suffix == ".pdf":
+        parsed = parse_pdf(data)
         st.success(f"Parsed PDF ({parsed.page_count} pages).")
         return (
             parsed.text,
-            {"name": path.name, "type": "pdf", "pages": parsed.page_count},
+            {"name": name, "type": "pdf", "pages": parsed.page_count},
         )
-    parsed = parse_docx(path)
+    parsed = parse_docx(data)
     st.success(f"Parsed DOCX ({parsed.paragraph_count} paragraphs).")
     return (
         parsed.text,
         {
-            "name": path.name,
+            "name": name,
             "type": "docx",
             "paragraphs": parsed.paragraph_count,
         },
     )
 
 
-def parse_rfps(paths: list[Path]) -> tuple[str, list[dict], int, int]:
+def parse_rfps(uploads: list) -> tuple[str, list[dict], int, int]:
     """Parse multiple RFPs and return combined text and summary stats."""
     texts: list[str] = []
     summaries: list[dict] = []
     total_pages = 0
     total_paragraphs = 0
-    for path in paths:
-        st.info(f"Parsing {path.name}...")
-        text, meta = parse_rfp(path)
+    for upload in uploads:
+        name = getattr(upload, "name", "rfp")
+        st.info(f"Parsing {name}...")
+        text, meta = parse_rfp(upload)
         texts.append(text)
         summaries.append(meta)
         if meta.get("type") == "pdf":
@@ -237,12 +227,13 @@ def normalize_models(deck_plan, report):
     return deck_plan, report
 
 
-def count_diagrams(plan: DeckPlan):
+def count_diagrams(plan: DeckPlan, diagram_images: dict[str, bytes] | None = None):
     """Count total diagrams and approved diagrams in the plan."""
     total = 0
     approved = 0
+    diagram_images = diagram_images or {}
     for s in plan.slides:
-        if s.diagram and s.diagram.image_path:
+        if s.diagram and (s.slide_id in diagram_images):
             total += 1
             if bool(s.diagram.approved):
                 approved += 1
@@ -277,7 +268,7 @@ def wizard_header(step: int):
             st.session_state.wizard_step = 2
             st.rerun()
     with col_c:
-        can_go_3 = st.session_state.deck_plan is not None and st.session_state.tpl_path is not None
+        can_go_3 = st.session_state.deck_plan is not None and st.session_state.tpl_bytes is not None
         if st.button("Go to Step 3", disabled=not can_go_3, use_container_width=True):
             st.session_state.wizard_step = 3
             st.rerun()
@@ -298,26 +289,13 @@ def _slugify(value: str) -> str:
     return value.strip("-") or "proposal"
 
 
-def _unique_path(path: Path) -> Path:
-    """Avoid overwriting existing outputs by appending a counter."""
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    for i in range(2, 1000):
-        candidate = path.with_name(f"{stem}-{i}{suffix}")
-        if not candidate.exists():
-            return candidate
-    return path
-
-
-def build_output_filename(plan: DeckPlan, rfp_paths: list[str] | None) -> str:
+def build_output_filename(plan: DeckPlan, rfp_names: list[str] | None) -> str:
     """Generate a descriptive PPTX filename based on the deck plan/RFP."""
     title = (getattr(plan, "deck_title", "") or "").strip()
     if title and "not specified" not in title.lower():
         base = _slugify(title)
-    elif rfp_paths:
-        base = _slugify(Path(rfp_paths[0]).stem)
+    elif rfp_names:
+        base = _slugify(Path(rfp_names[0]).stem)
     else:
         base = "proposal"
     return f"{base}.pptx"
@@ -390,21 +368,14 @@ if st.session_state.wizard_step == 1:
             st.stop()
 
         try:
-            # Save RFP uploads
-            rfp_paths: list[Path] = []
-            for rfp_file in rfp_files:
-                rfp_paths.append(
-                    save_upload(rfp_file, settings.data_dir / "uploads" / f"rfp_{rfp_file.name}")
-                )
-            st.session_state.rfp_paths = [str(p) for p in rfp_paths]
+            rfp_names = [getattr(f, "name", "rfp") for f in rfp_files]
+            st.session_state.rfp_names = rfp_names
             step_progress.progress(0.3)
 
-            # Use embedded template (copy into data/uploads for reproducibility)
-            tpl_copy = settings.data_dir / "uploads" / "tpl_standard_proposal_template_v1.pptx"
-            tpl_copy.write_bytes(STANDARD_TEMPLATE.read_bytes())
-            st.session_state.tpl_path = str(tpl_copy)
+            tpl_bytes = STANDARD_TEMPLATE.read_bytes()
+            st.session_state.tpl_bytes = tpl_bytes
 
-            rfp_text, rfp_summaries, total_pages, total_paragraphs = parse_rfps(rfp_paths)
+            rfp_text, rfp_summaries, total_pages, total_paragraphs = parse_rfps(rfp_files)
             step_progress.progress(0.5)
 
             if rfp_summaries:
@@ -431,7 +402,7 @@ if st.session_state.wizard_step == 1:
                 st.caption(f"Totals: {total_pages} pages, {total_paragraphs} paragraphs")
 
             # Analyze template layouts/placeholders
-            ti = analyze_pptx_template(tpl_copy)
+            ti = analyze_pptx_template(tpl_bytes)
             template_info = {
                 "slide_layout_names": ti.slide_layout_names,
                 "masters": ti.masters,
@@ -441,19 +412,17 @@ if st.session_state.wizard_step == 1:
             st.info(f"Template analyzed: {len(ti.slide_layout_names)} layouts found.")
             step_progress.progress(0.7)
 
-            # Optional RAG
+            # Optional RAG (in-memory only)
             retrieved_context = None
-            rag_dir = settings.data_dir / "indexes" / "default_rag"
             if ref_txt and build_index:
-                ref_path = save_upload(ref_txt, settings.data_dir / "uploads" / f"ref_{ref_txt.name}")
-                ref_text = ref_path.read_text(encoding="utf-8", errors="ignore")
+                ref_text = ref_txt.getvalue().decode("utf-8", errors="ignore")
                 chunks = chunk_text(ref_text)
                 rag = build_faiss_index(chunks)
-                save_index(rag, rag_dir)
+                st.session_state.rag_index = rag
                 st.success(f"Built RAG index with {len(chunks)} chunks.")
 
-            if rag_dir.exists() and (rag_dir / "index.faiss").exists():
-                rag = load_index(rag_dir)
+            rag = st.session_state.get("rag_index")
+            if rag is not None:
                 query = """
                 mandatory proposal sections, required slides,
                 governance model, compliance, team structure,
@@ -462,7 +431,7 @@ if st.session_state.wizard_step == 1:
                 """
                 top = retrieve(rag, query, k=10)
                 retrieved_context = "\n\n".join([f"[score={c.score:.3f}]\n{c.text}" for c in top])
-                st.caption("Retrieved reusable context from local RAG index.")
+                st.caption("Retrieved reusable context from in-memory RAG index.")
 
             st.session_state.retrieved_context = retrieved_context
             step_progress.progress(0.85)
@@ -494,6 +463,7 @@ if st.session_state.wizard_step == 1:
             st.session_state.deck_plan = deck_plan
             st.session_state.report = report
             st.session_state.diagrams_generated = False  # reset for new run
+            st.session_state.diagram_images = {}
             st.session_state.render_complete = False
             step_progress.progress(1.0)
             step_status.update(label="Step 1 complete.", state="complete")
@@ -550,7 +520,9 @@ if st.session_state.wizard_step == 2:
             st.rerun()
         st.stop()
 
-    total_diagrams, approved_diagrams = count_diagrams(plan)
+    total_diagrams, approved_diagrams = count_diagrams(
+        plan, st.session_state.get("diagram_images")
+    )
     if not st.session_state.diagrams_generated:
         render_step_progress(0.2, "Step 2 progress: ready to generate diagrams.")
     elif total_diagrams:
@@ -578,8 +550,7 @@ if st.session_state.wizard_step == 2:
         )
 
     if gen_clicked:
-        diagrams_dir = settings.data_dir / "outputs" / "diagrams"
-        diagrams_dir.mkdir(parents=True, exist_ok=True)
+        diagram_images = {}
 
         slides_with_diagrams = [s for s in plan.slides if s.diagram]
         total_targets = len(slides_with_diagrams)
@@ -591,15 +562,14 @@ if st.session_state.wizard_step == 2:
             for idx, s in enumerate(slides_with_diagrams, start=1):
                 if not s.diagram:
                     continue
-                out_img = diagrams_dir / f"{s.slide_id}.png"
-                generate_diagram_png(
+                img_bytes = generate_diagram_png(
                     s.diagram.prompt,
-                    out_img,
+                    out_path=None,
                     model=diagram_model,
                     size=diagram_size,
                     quality=diagram_quality,
                 )
-                s.diagram.image_path = str(out_img)
+                diagram_images[s.slide_id] = img_bytes
                 made += 1
                 status.update(
                     label=f"Generated {idx}/{total_targets} diagrams",
@@ -609,13 +579,15 @@ if st.session_state.wizard_step == 2:
 
             status.update(label="Diagram generation complete.", state="complete")
             st.session_state.deck_plan = plan
+            st.session_state.diagram_images = diagram_images
             st.session_state.diagrams_generated = True
             st.success(f"Generated {made} diagram(s). Now approve below.")
             st.rerun()
         except Exception as exc:
             stop_on_error("Diagram generation failed. See details below.", status, exc)
 
-    any_images = any((s.diagram and s.diagram.image_path) for s in plan.slides)
+    diagram_images = st.session_state.get("diagram_images", {})
+    any_images = any((s.diagram and s.slide_id in diagram_images) for s in plan.slides)
     if not any_images:
         st.info("No diagram images generated yet. Click **Generate / Regenerate Diagrams** above.")
         st.stop()
@@ -624,15 +596,13 @@ if st.session_state.wizard_step == 2:
 
     with st.form("diagram_approvals_form"):
         for s in plan.slides:
-            if not s.diagram or not s.diagram.image_path:
+            if not s.diagram or s.slide_id not in diagram_images:
                 continue
 
             st.markdown(f"""**{s.slide_id} — {s.title}**  
 Kind: `{s.diagram.kind}`""")
 
-            img_path = Path(s.diagram.image_path)
-            if img_path.exists():
-                st.image(str(img_path), caption=s.diagram.prompt)
+            st.image(diagram_images[s.slide_id], caption=s.diagram.prompt)
 
             s.diagram.approved = st.checkbox(
                 f"Approve diagram for {s.slide_id}",
@@ -646,7 +616,7 @@ Kind: `{s.diagram.kind}`""")
 
     if save:
         st.session_state.deck_plan = plan
-        total, approved = count_diagrams(plan)
+        total, approved = count_diagrams(plan, st.session_state.get("diagram_images"))
         st.success(f"Approvals saved ({approved}/{total}). Moving to Step 3…")
         st.session_state.wizard_step = 3
         st.rerun()
@@ -661,14 +631,14 @@ if st.session_state.wizard_step == 3:
     else:
         render_step_progress(0.2, "Step 3 progress: ready to render.")
 
-    if st.session_state.deck_plan is None or st.session_state.tpl_path is None:
+    if st.session_state.deck_plan is None or st.session_state.tpl_bytes is None:
         st.error("Missing required state. Please complete Step 1 first.")
         st.stop()
 
     plan: DeckPlan = st.session_state.deck_plan
-    tpl_path = Path(st.session_state.tpl_path)
+    tpl_bytes = st.session_state.tpl_bytes
 
-    total, approved = count_diagrams(plan)
+    total, approved = count_diagrams(plan, st.session_state.get("diagram_images"))
     cols = st.columns(3)
     cols[0].metric("Slides", value=len(plan.slides))
     cols[1].metric("Diagrams generated", value=total)
@@ -682,41 +652,41 @@ if st.session_state.wizard_step == 3:
     if render_now:
         render_progress = st.progress(0.2)
         render_status = st.status("Rendering outputs...", expanded=False)
-        out_name = build_output_filename(plan, st.session_state.get("rfp_paths"))
-        out_pptx = _unique_path(settings.data_dir / "outputs" / out_name)
+        out_name = build_output_filename(plan, st.session_state.get("rfp_names"))
         try:
-            render_deck_from_template(plan, tpl_path, out_pptx)
+            pptx_bytes = render_deck_from_template(
+                plan,
+                tpl_bytes,
+                out_path=None,
+                diagram_images=st.session_state.get("diagram_images"),
+            )
             render_progress.progress(0.7)
 
-            report_path = settings.data_dir / "reports" / "traceability.json"
+            report_bytes = None
             if st.session_state.report:
-                report_path.write_text(
-                    st.session_state.report.model_dump_json(indent=2), encoding="utf-8"
-                )
+                report_bytes = st.session_state.report.model_dump_json(indent=2).encode("utf-8")
             render_progress.progress(1.0)
             render_status.update(label="Render complete.", state="complete")
             st.session_state.render_complete = True
 
             st.success("Rendered PPTX successfully.")
 
-            with open(out_pptx, "rb") as f:
+            st.download_button(
+                "Download PPTX",
+                data=pptx_bytes,
+                file_name=out_name,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True,
+            )
+
+            if report_bytes is not None:
                 st.download_button(
-                    "Download PPTX",
-                    data=f,
-                    file_name=out_pptx.name,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "Download Traceability Report (JSON)",
+                    data=report_bytes,
+                    file_name="traceability.json",
+                    mime="application/json",
                     use_container_width=True,
                 )
-
-            if report_path.exists():
-                with open(report_path, "rb") as f:
-                    st.download_button(
-                        "Download Traceability Report (JSON)",
-                        data=f,
-                        file_name=report_path.name,
-                        mime="application/json",
-                        use_container_width=True,
-                    )
         except Exception as exc:
             stop_on_error("Render failed. See details below.", render_status, exc)
 

@@ -308,6 +308,7 @@ DIAGRAMS (VERY IMPORTANT):
   - the flows/arrows
   - labeling guidance
   - "white background, minimal text, no logos"
+  - "keep all text and shapes inside a 5-8% safe margin; do not place content at the edges"
 
 ALIGNMENT & COVERAGE:
 - Map slides to RFP milestones and evaluation criteria wherever possible.

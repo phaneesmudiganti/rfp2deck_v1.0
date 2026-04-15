@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
+from typing import Optional, Union
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -197,11 +199,28 @@ def _add_bullets(slide, x_in: float, y_in: float, w_in: float, h_in: float, bull
         p.alignment = PP_ALIGN.LEFT
 
 
-def _place_image_contain(slide, img_path: Path, x_in: float, y_in: float, w_in: float, h_in: float):
+def _place_image_contain(
+    slide,
+    img_source: Union[Path, bytes],
+    x_in: float,
+    y_in: float,
+    w_in: float,
+    h_in: float,
+    inset_in: float = 0.0,
+):
     """Place an image contained within the bounding box (no overflow)."""
     from PIL import Image
 
-    img = Image.open(img_path)
+    if inset_in > 0:
+        x_in = x_in + inset_in
+        y_in = y_in + inset_in
+        w_in = max(0.01, w_in - (2 * inset_in))
+        h_in = max(0.01, h_in - (2 * inset_in))
+
+    if isinstance(img_source, bytes):
+        img = Image.open(BytesIO(img_source))
+    else:
+        img = Image.open(img_source)
     iw, ih = img.size
     img.close()
 
@@ -220,16 +239,34 @@ def _place_image_contain(slide, img_path: Path, x_in: float, y_in: float, w_in: 
     px = x_in + (w_in - new_w) / 2.0
     py = y_in + (h_in - new_h) / 2.0
 
-    slide.shapes.add_picture(
-        str(img_path),
-        Inches(px),
-        Inches(py),
-        width=Inches(new_w),
-        height=Inches(new_h),
-    )
+    if isinstance(img_source, bytes):
+        stream = BytesIO(img_source)
+        stream.seek(0)
+        slide.shapes.add_picture(
+            stream,
+            Inches(px),
+            Inches(py),
+            width=Inches(new_w),
+            height=Inches(new_h),
+        )
+    else:
+        slide.shapes.add_picture(
+            str(img_source),
+            Inches(px),
+            Inches(py),
+            width=Inches(new_w),
+            height=Inches(new_h),
+        )
 
 
-def _render_consulting_slide(slide, prs: Presentation, title: str, bullets, diagram=None):
+def _render_consulting_slide(
+    slide,
+    prs: Presentation,
+    title: str,
+    bullets,
+    diagram=None,
+    diagram_bytes: Optional[bytes] = None,
+):
     """Stacked layout: title top, big image middle (if approved), bullets bottom."""
     # clear existing template artifacts
     _clear_text_on_slide(slide)
@@ -246,14 +283,17 @@ def _render_consulting_slide(slide, prs: Presentation, title: str, bullets, diag
     has_diagram = bool(
         diagram
         and getattr(diagram, "approved", False)
-        and getattr(diagram, "image_path", None)
+        and (diagram_bytes is not None or getattr(diagram, "image_path", None))
     )
     image_path = getattr(diagram, "image_path", None) if diagram else None
 
     if has_diagram:
-        img = Path(str(image_path))
-        if img.exists():
-            _place_image_contain(slide, img, dx, dy, dw, dh)
+        if diagram_bytes is not None:
+            _place_image_contain(slide, diagram_bytes, dx, dy, dw, dh, inset_in=0.08)
+        elif image_path is not None:
+            img = Path(str(image_path))
+            if img.exists():
+                _place_image_contain(slide, img, dx, dy, dw, dh, inset_in=0.08)
 
         # bottom bullets
         font_pt = _fit_font_for_box(bullets, bw, bh)
@@ -267,9 +307,17 @@ def _render_consulting_slide(slide, prs: Presentation, title: str, bullets, diag
     _add_bullets(slide, dx, body_y, dw, body_h, bullets, font_pt)
 
 
-def render_deck_from_template(deck_plan: DeckPlan, template_pptx: Path, out_path: Path) -> Path:
+def render_deck_from_template(
+    deck_plan: DeckPlan,
+    template_pptx: Union[Path, bytes],
+    out_path: Optional[Path] = None,
+    diagram_images: Optional[dict[str, bytes]] = None,
+) -> Union[Path, bytes]:
     """Render a new PPTX from a template and a deck plan."""
-    prs = Presentation(str(template_pptx))
+    if isinstance(template_pptx, bytes):
+        prs = Presentation(BytesIO(template_pptx))
+    else:
+        prs = Presentation(str(template_pptx))
     blank_layout = _find_blank_layout(prs)
 
     # remove all existing slides
@@ -281,16 +329,24 @@ def render_deck_from_template(deck_plan: DeckPlan, template_pptx: Path, out_path
     for slide_spec in deck_plan.slides:
         slide = prs.slides.add_slide(blank_layout)
 
+        diagram_bytes = None
+        if diagram_images is not None:
+            diagram_bytes = diagram_images.get(slide_spec.slide_id)
         _render_consulting_slide(
             slide,
             prs,
             slide_spec.title or "",
             slide_spec.bullets or [],
             diagram=getattr(slide_spec, "diagram", None),
+            diagram_bytes=diagram_bytes,
         )
 
         # Final cleanup: remove any leftover template guidance/markers so edit mode stays clean.
         _remove_marker_shapes(slide)
 
-    prs.save(str(out_path))
-    return out_path
+    if out_path is not None:
+        prs.save(str(out_path))
+        return out_path
+    stream = BytesIO()
+    prs.save(stream)
+    return stream.getvalue()

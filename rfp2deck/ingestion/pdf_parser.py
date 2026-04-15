@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Union
 
 import fitz  # PyMuPDF
 
@@ -12,8 +13,11 @@ class ParsedDoc:
     page_count: int
 
 
-def parse_pdf(path: Path) -> ParsedDoc:
-    doc = fitz.open(path)
+def parse_pdf(path_or_bytes: Union[Path, bytes]) -> ParsedDoc:
+    if isinstance(path_or_bytes, bytes):
+        doc = fitz.open(stream=path_or_bytes, filetype="pdf")
+    else:
+        doc = fitz.open(path_or_bytes)
     texts = []
     for i in range(doc.page_count):
         page = doc.load_page(i)

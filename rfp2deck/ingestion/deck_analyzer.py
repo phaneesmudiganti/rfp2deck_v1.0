@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pptx import Presentation
 
@@ -14,8 +15,11 @@ class TemplateInfo:
     placeholder_map: Dict[str, Any]
 
 
-def analyze_pptx_template(path: Path) -> TemplateInfo:
-    prs = Presentation(str(path))
+def analyze_pptx_template(path_or_bytes: Union[Path, bytes]) -> TemplateInfo:
+    if isinstance(path_or_bytes, bytes):
+        prs = Presentation(BytesIO(path_or_bytes))
+    else:
+        prs = Presentation(str(path_or_bytes))
     layout_names = []
     for layout in prs.slide_layouts:
         name = getattr(layout, "name", None) or "layout"

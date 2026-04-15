@@ -86,6 +86,7 @@ def _appendix_arch_diagram(view_name: str, understanding: RFPUnderstanding) -> D
         "Style: consulting-grade, readable labels, minimal clutter, white background.\n"
         "Use 6–12 nodes max, grouped, with directional arrows.\n"
         "Add a short title inside the diagram.\n"
+        "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges.\n"
     )
     return DiagramSpec(
         prompt=prompt,
@@ -113,11 +114,88 @@ def _exec_summary_diagram_prompt(slide: SlideSpec) -> str:
         "simple sans-serif font, left-aligned text, generous spacing.\n"
         "Do not add extra icons, charts, or decorative elements. No gradients or shadows. "
         "No hand-drawn or sketch effects. Keep text crisp and readable.\n"
+        "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges.\n"
         "Output a single slide-like image sized for 16:9."
     )
 
 
-def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
+def _first_sentence(text: str, max_len: int = 200) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    first_line = t.splitlines()[0].strip()
+    parts = first_line.split(". ")
+    sent = parts[0].strip()
+    if len(sent) > max_len:
+        return sent[: max_len - 1].rstrip() + "…"
+    return sent
+
+
+def _exec_summary_bullets(understanding: RFPUnderstanding | None) -> List[str]:
+    if understanding is None:
+        return [
+            "Opportunity and key objectives",
+            "Our recommended approach and solution highlights",
+            "Business impact and expected outcomes",
+        ]
+
+    summary = _first_sentence(getattr(understanding, "summary", "") or "")
+    customer = getattr(understanding, "customer_name", None) or ""
+    opp = getattr(understanding, "opportunity_title", None) or ""
+    due = getattr(understanding, "due_date", None) or ""
+
+    bullet_1 = summary
+    if not bullet_1:
+        if customer and opp:
+            bullet_1 = f"Opportunity: {opp} for {customer}"
+        elif opp:
+            bullet_1 = f"Opportunity: {opp}"
+        elif customer:
+            bullet_1 = f"Opportunity for {customer}"
+        else:
+            bullet_1 = "Opportunity and key objectives"
+
+    reqs = []
+    for r in getattr(understanding, "requirements", [])[:2]:
+        text = (getattr(r, "text", "") or "").strip()
+        if text:
+            reqs.append(text[:160].rstrip())
+    if reqs:
+        bullet_2 = "Key requirements: " + "; ".join(reqs)
+    else:
+        bullet_2 = "Key requirements and evaluation criteria (from RFP)"
+
+    if due:
+        bullet_3 = f"Proposal due: {due}"
+    else:
+        risks = [r for r in (getattr(understanding, "risks", []) or []) if (r or "").strip()]
+        if risks:
+            bullet_3 = "Key risks/constraints: " + risks[0].strip()[:160].rstrip()
+        else:
+            assumptions = [
+                a for a in (getattr(understanding, "assumptions", []) or []) if (a or "").strip()
+            ]
+            if assumptions:
+                bullet_3 = "Assumptions: " + assumptions[0].strip()[:160].rstrip()
+            else:
+                bullet_3 = "Business impact and expected outcomes"
+
+    return [bullet_1, bullet_2, bullet_3]
+
+
+def _is_placeholder_exec_bullets(bullets: Optional[List[str]]) -> bool:
+    if not bullets:
+        return True
+    norm = [b.strip().lower() for b in bullets if (b or "").strip()]
+    placeholder = [
+        "opportunity and key objectives",
+        "our recommended approach and solution highlights",
+        "business impact and expected outcomes",
+    ]
+    return norm[:3] == placeholder
+
+
+def ensure_required_slides(deck_plan: DeckPlan, understanding: RFPUnderstanding | None = None) -> DeckPlan:
     """Ensure required slides exist. Adds missing ones with sensible defaults."""
     existing = {(s.archetype or "").lower(): s for s in deck_plan.slides}
     # Helper: add slide
@@ -169,13 +247,13 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
         add_slide(
             "Solution Overview",
             "Executive Summary",
-            bullets=[
-                "Opportunity and key objectives",
-                "Our recommended approach and solution highlights",
-                "Business impact and expected outcomes",
-            ],
+            bullets=_exec_summary_bullets(understanding),
             diagram=None,
         )
+    else:
+        for s in deck_plan.slides:
+            if _is_exec_summary(s) and _is_placeholder_exec_bullets(s.bullets):
+                s.bullets = _exec_summary_bullets(understanding)
 
     # Customer Context
     if "customer context" not in existing:
@@ -212,7 +290,10 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
                 "Security and compliance considerations",
             ],
             diagram=DiagramSpec(
-                prompt="Create a high-level target architecture diagram with components and integrations.",
+                prompt=(
+                    "Create a high-level target architecture diagram with components and integrations. "
+                    "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                ),
                 approved=False,
                 image_path=None,
             ),
@@ -229,7 +310,10 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
                 "Quality assurance and reporting cadence",
             ],
             diagram=DiagramSpec(
-                prompt="Create a simple delivery governance diagram (client + vendor roles, steering, delivery squads).",
+                prompt=(
+                    "Create a simple delivery governance diagram (client + vendor roles, steering, delivery squads). "
+                    "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                ),
                 approved=False,
                 image_path=None,
             ),
@@ -248,7 +332,10 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
                 "Phase 4: Hypercare & Transition",
             ],
             diagram=DiagramSpec(
-                prompt="Create a horizontal phase timeline (4–6 phases) with milestone icons and durations placeholders.",
+                prompt=(
+                    "Create a horizontal phase timeline (4–6 phases) with milestone icons and durations placeholders. "
+                    "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                ),
                 approved=False,
                 image_path=None,
             ),
@@ -282,7 +369,8 @@ def ensure_required_slides(deck_plan: DeckPlan) -> DeckPlan:
             diagram=DiagramSpec(
                 prompt=(
                     "Create a clean team org chart: Client (left) + Delivery team (right) with 6–10 roles, "
-                    "showing reporting lines and key interfaces."
+                    "showing reporting lines and key interfaces. "
+                    "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
                 ),
                 approved=False,
                 image_path=None,
@@ -400,19 +488,34 @@ def ensure_diagrams_for_key_slides(deck_plan: DeckPlan, understanding: RFPUnders
             if s.diagram is None:
                 prompt = ""
                 if arch == "architecture":
-                    prompt = "Create a high-level target architecture diagram with components, integrations, and data flow."
+                    prompt = (
+                        "Create a high-level target architecture diagram with components, integrations, and data flow. "
+                        "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                    )
                 elif arch == "delivery plan":
-                    prompt = "Create a delivery governance diagram showing client & vendor roles, cadence, and escalation."
+                    prompt = (
+                        "Create a delivery governance diagram showing client & vendor roles, cadence, and escalation. "
+                        "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                    )
                 elif arch == "timeline":
-                    prompt = "Create a horizontal phase roadmap with 4–6 phases and milestone icons."
+                    prompt = (
+                        "Create a horizontal phase roadmap with 4–6 phases and milestone icons. "
+                        "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                    )
                 elif arch == "team":
-                    prompt = "Create a team org chart showing key roles (6–10) and reporting lines."
+                    prompt = (
+                        "Create a team org chart showing key roles (6–10) and reporting lines. "
+                        "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                    )
                 elif arch == "solution overview":
                     if _is_exec_summary(s):
                         # Exec Summary is better rendered as native PPTX text, not an image.
                         prompt = ""
                     else:
-                        prompt = "Create a solution overview diagram showing major building blocks and value streams."
+                        prompt = (
+                            "Create a solution overview diagram showing major building blocks and value streams. "
+                            "Keep all text and shapes inside a 5–8% safe margin; do not place content at the edges."
+                        )
 
                 if prompt:
                     s.diagram = DiagramSpec(prompt=prompt, approved=False, image_path=None)
@@ -472,7 +575,7 @@ def plan_deck(state: AgentState) -> Dict[str, Any]:
 
     deck_plan = response_as_schema(prompt, DeckPlan, reasoning_effort="high")
 
-    deck_plan = ensure_required_slides(deck_plan)
+    deck_plan = ensure_required_slides(deck_plan, understanding=state.understanding)
     deck_plan = order_deck(deck_plan)
     deck_plan = polish_deck_text(deck_plan)
     deck_plan = ensure_diagrams_for_key_slides(deck_plan, understanding=state.understanding)
